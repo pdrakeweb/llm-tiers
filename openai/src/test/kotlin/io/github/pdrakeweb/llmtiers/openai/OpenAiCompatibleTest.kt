@@ -204,6 +204,9 @@ class OpenAiCompatibleTest {
             500 to ProviderFailure.Server(500),
             503 to ProviderFailure.Server(503),
             504 to ProviderFailure.Timeout,
+            408 to ProviderFailure.Timeout,
+            413 to ProviderFailure.Other("http 413"),
+            422 to ProviderFailure.Other("http 422"),
             404 to ProviderFailure.Other("http 404"),
             400 to ProviderFailure.Other("http 400"),
         )
@@ -231,9 +234,58 @@ class OpenAiCompatibleTest {
     fun `an error object inside the stream is a failure`() {
         server.onChat = { it.sse(chunk("par"), """{"error":{"code":429,"message":"slow down"}}""") }
         assertEquals(
-            listOf(ProviderEvent.Token("par"), ProviderEvent.Failed(ProviderFailure.RateLimited)),
+            listOf(ProviderEvent.Token("par"), ProviderEvent.Failed(ProviderFailure.Other("stream error 429"))),
             provider().collect(),
         )
+    }
+
+    @Test
+    fun `an error inside the stream never claims the request was not processed`() {
+        // The server accepted the request and was generating (reasoning deltas), then gave up.
+        // RateLimited or AuthRejected here would let a request that is not safe to retry be replayed.
+        for (code in listOf(401, 403, 429)) {
+            server.onChat = {
+                it.sse("""{"choices":[{"delta":{"reasoning_content":"thinking"}}]}""", """{"error":{"code":$code,"message":"no"}}""")
+            }
+            assertEquals(listOf<ProviderEvent>(ProviderEvent.Failed(ProviderFailure.Other("stream error $code"))), provider().collect())
+        }
+        server.onChat = { it.sse("""{"error":{"code":502,"message":"upstream"}}""") }
+        assertEquals(listOf<ProviderEvent>(ProviderEvent.Failed(ProviderFailure.Server(502))), provider().collect())
+    }
+
+    @Test
+    fun `a redirect is never followed - the prompt is not re-sent to another host`() {
+        FakeOpenAiServer().use { elsewhere ->
+            for (code in listOf(301, 302, 307, 308)) {
+                server.onChat = {
+                    it.responseHeaders.add("Location", elsewhere.baseUrl + "/chat/completions")
+                    it.sendResponseHeaders(code, -1)
+                }
+                server.onModels = {
+                    it.responseHeaders.add("Location", elsewhere.baseUrl + "/models")
+                    it.sendResponseHeaders(code, -1)
+                }
+                val p = provider(apiKey = "k")
+                assertEquals(listOf<ProviderEvent>(ProviderEvent.Failed(ProviderFailure.Other("http $code"))), p.collect(), "HTTP $code")
+                runBlocking { p.probe() }
+            }
+            assertTrue(elsewhere.requests.isEmpty(), "the redirect target received ${elsewhere.requests.size} request(s)")
+        }
+    }
+
+    @Test
+    fun `a connection that drops after the request was written is not Unreachable`() {
+        // Unreachable is treated as proof the server did not process the request. Here it may have.
+        server.onChat = { /* read the request, then close without answering */ }
+        val failure = assertIs<ProviderEvent.Failed>(provider().collect().single()).failure
+        assertTrue(failure != ProviderFailure.Unreachable && failure is ProviderFailure.Other, "was $failure")
+        assertEquals(1, server.chatRequests.size, "sent once: no silent retry")
+    }
+
+    @Test
+    fun `a key with stray whitespace is trimmed, not turned into a broken header`() {
+        provider(apiKey = " sk-abc\n").collect()
+        assertEquals("Bearer sk-abc", server.chatRequests.single().headers["authorization"])
     }
 
     @Test

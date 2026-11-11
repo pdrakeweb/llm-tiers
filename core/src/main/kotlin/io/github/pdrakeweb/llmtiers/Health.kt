@@ -80,7 +80,7 @@ public class HealthTracker(
     }
 
     private val mutex = Mutex()
-    private val entries = HashMap<Key, Entry>()
+    private val entries = LinkedHashMap<Key, Entry>()
     private val latency = HashMap<ProviderId, Latency>()
 
     public suspend fun snapshot(network: NetworkId): HealthSnapshot = mutex.withLock {
@@ -115,8 +115,16 @@ public class HealthTracker(
     public suspend fun recordFailure(provider: ProviderId, network: NetworkId, failure: ProviderFailure): Unit = mutex.withLock {
         // A prompt that is too long says something about the request, not about the provider.
         if (failure is ProviderFailure.ContextTooLong) return@withLock
+        // A learned timeout that fires may simply be out of date (the provider got slower). Samples
+        // come only from successes, so forget them and relearn from the defaults; otherwise a
+        // too-tight timeout could never correct itself.
+        when (failure) {
+            ProviderFailure.FirstTokenTimeout -> latency[provider]?.firstToken?.clear()
+            ProviderFailure.Stalled -> latency[provider]?.gap?.clear()
+            else -> Unit
+        }
         val now = clock.nowMillis()
-        val e = entries.getOrPut(Key(provider, network)) { Entry() }
+        val e = entry(Key(provider, network))
         e.probedAt = null
         val until = e.outUntil
         when {
@@ -142,7 +150,14 @@ public class HealthTracker(
     }
 
     public suspend fun recordProbeSuccess(provider: ProviderId, network: NetworkId): Unit = mutex.withLock {
-        entries.getOrPut(Key(provider, network)) { Entry() }.probedAt = clock.nowMillis()
+        entry(Key(provider, network)).probedAt = clock.nowMillis()
+    }
+
+    /** Networks come and go (every reconnect can be a new id), so the oldest entries are dropped. */
+    private fun entry(key: Key): Entry {
+        entries[key]?.let { return it }
+        if (entries.size >= MAX_ENTRIES) entries.remove(entries.keys.first())
+        return Entry().also { entries[key] = it }
     }
 
     public suspend fun timeoutsFor(provider: ProviderId): AttemptTimeouts = mutex.withLock {
@@ -206,6 +221,7 @@ public class HealthTracker(
 
     private companion object {
         const val MAX_SAMPLES = 100
+        const val MAX_ENTRIES = 256
         const val TYPICAL_MIN_SAMPLES = 5
         const val TYPICAL_PERCENTILE = 0.9
     }

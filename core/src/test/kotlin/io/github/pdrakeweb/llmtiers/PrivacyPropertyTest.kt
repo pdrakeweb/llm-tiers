@@ -65,6 +65,7 @@ class PrivacyPropertyTest {
             }
             val approved = providers.filter { rnd.nextBoolean() }.map { it.id }.toSet()
             val grantedFor = mutableSetOf<ProviderId>()
+            var identifierShownToApprove = false
             val approveKind = rnd.nextInt(5)
             val logger = RecordingLogger()
             val monitor = ScriptedNetworkMonitor(
@@ -84,7 +85,8 @@ class PrivacyPropertyTest {
                     0 -> Unit // no approve callback at all
                     1 -> approve { _, _ -> error("approval UI crashed") }
                     else -> approve { request, provider ->
-                        assertTrue(request.data.none { it.sensitivity == Sensitivity.Identifier }, where())
+                        // Recorded, not asserted here: an exception in this callback counts as a refusal.
+                        if (request.data.any { it.sensitivity == Sensitivity.Identifier }) identifierShownToApprove = true
                         (provider.id in approved).also { if (it) grantedFor += provider.id }
                     }
                 }
@@ -147,6 +149,7 @@ class PrivacyPropertyTest {
                 }
             }
 
+            assertFalse(identifierShownToApprove, "${where()}: the approval preview contained an Identifier item")
             val logged = logger.records.joinToString("\n")
             for (marker in listOf("<<", "question", "be brief", "partial", "answer", "label")) {
                 assertFalse(marker in logged, "${where()}: log contains '$marker'")

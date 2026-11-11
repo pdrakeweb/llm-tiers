@@ -670,11 +670,23 @@ class ExecutorTest {
 
     @Test
     fun `a successful probe is cached per network, a cloud provider is never probed`() = runTest {
-        val home = FakeProvider("home", LAN) { fail(ProviderFailure.Server(500)) }
+        val home = FakeProvider("home", LAN)
         val cloud = FakeProvider("cloud", CLOUD)
-        val ai = ai(home, cloud) { health = HealthConfig(failureThreshold = 100) }
+        val monitor = ScriptedNetworkMonitor(ScriptedNetworkMonitor.wifi("home"))
+        val ai = ai(home, cloud) { network = monitor }
+        repeat(3) { ai.generate(hi) }
+        assertEquals(1, home.probes, "three requests on one network, one probe")
+        delay(60.seconds)
         ai.generate(hi)
-        assertEquals(1, home.probes)
+        assertEquals(2, home.probes, "probed again once the cached result is 60 s old")
+        monitor.switchTo(ScriptedNetworkMonitor.wifi("office"))
+        ai.generate(hi)
+        assertEquals(3, home.probes, "a different network is probed afresh")
+
+        home.always { fail(ProviderFailure.Server(500)) }
+        ai.generate(hi)
+        assertEquals(ProviderId("cloud"), (ai.generate(hi) as Result.Answer).answeredBy)
+        assertEquals(4, home.probes, "a failure invalidates the cached probe")
         assertEquals(0, cloud.probes, "a degraded connection is tried, not pre-emptively avoided")
     }
 
@@ -718,6 +730,59 @@ class ExecutorTest {
         assertEquals(ProviderId("ok"), (result as Result.Answer).answeredBy)
         assertEquals(Outcome.Skipped(SkipReason.CapabilitiesUnavailable), result.outcomeOf("stuck"))
         assertEquals(5_000, currentTime)
+    }
+
+    @Test
+    fun `callbacks that ignore cancellation still cannot hang the request`() = runTest {
+        // suspendCoroutine is not cancellable: a dialog the user never answers looks like this.
+        suspend fun never(): Nothing = kotlin.coroutines.suspendCoroutine { }
+        val cloud = FakeProvider("cloud", CLOUD)
+        val personal = hi.copy(data = listOf(Item("p", Sensitivity.Personal)))
+
+        assertIs<Result.Blocked>(ai(cloud) { approve { _, _ -> never() } }.generate(personal))
+        assertIs<Result.Blocked>(ai(cloud) { shortCircuit { never() } }.generate(hi))
+        assertEquals(0, cloud.calls)
+
+        val stuckCaps = FakeProvider("stuck", CLOUD).apply { onCapabilities = { never() } }
+        val stuckProbe = FakeProvider("lan", LAN).apply { onProbe = { never() } }
+        val result = ai(stuckCaps, stuckProbe, cloud).generate(hi)
+        assertEquals(ProviderId("cloud"), (result as Result.Answer).answeredBy)
+
+        val deadline = ai(cloud) { approve { _, _ -> never() } }.generate(personal.copy(deadline = 700.milliseconds))
+        assertIs<Result.NoVerdict>(deadline)
+    }
+
+    @Test
+    fun `a network monitor or logger that throws does not break the request`() = runTest {
+        val broken = object : NetworkMonitor {
+            override val state: kotlinx.coroutines.flow.StateFlow<NetworkState> get() = error("monitor bug")
+        }
+        val result = ai(FakeProvider("cloud", CLOUD)) {
+            network = broken
+            logger = Logger { error("logger bug") }
+        }.generate(hi)
+        assertIs<Result.Answer>(result)
+    }
+
+    @Test
+    fun `a learned timeout that fires is forgotten, so a provider that got slower is not locked out`() = runTest {
+        val a = FakeProvider("a", CLOUD) { wait(100.milliseconds); token("t"); done() }
+        val ai = ai(a)
+        repeat(20) { ai.generate(hi) }
+        assertEquals(1.seconds, ai.health.timeoutsFor(ProviderId("a")).firstToken)
+
+        a.always { wait(2.seconds); token("slower now"); done() }
+        assertIs<Result.NoneAvailable>(ai.generate(hi), "the first request after the slowdown times out")
+        assertEquals(10.seconds, ai.health.timeoutsFor(ProviderId("a")).firstToken, "back to the default")
+        assertEquals("slower now", (ai.generate(hi.copy(pin = ProviderId("a"))) as Result.Answer).text)
+    }
+
+    @Test
+    fun `results and tokens do not put response text in toString`() = runTest {
+        val a = FakeProvider("a", CLOUD) { token("RESPONSE-TEXT"); done() }
+        val events = ai(a).stream(hi).toList()
+        assertFalse("RESPONSE-TEXT" in events.toString())
+        assertFalse("RESPONSE-TEXT" in ProviderEvent.Token("RESPONSE-TEXT").toString())
     }
 
     @Test

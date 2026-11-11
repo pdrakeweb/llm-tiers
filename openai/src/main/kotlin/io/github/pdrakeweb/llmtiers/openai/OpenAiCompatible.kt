@@ -60,14 +60,15 @@ import kotlin.time.Duration.Companion.seconds
  * @param requiresKey when true and [apiKey] is blank the provider fails with `KeyMissing` without
  *   touching the network.
  * @param client an OkHttp client to share connection pools with the app. Its event-listener
- *   factory is replaced for this provider's calls.
+ *   factory is replaced for this provider's calls, and its interceptors still run: do not pass a
+ *   client with a body-logging interceptor, or request and response content will be logged.
  */
 public class OpenAiCompatible(
     id: String,
     baseUrl: String,
     public val model: String,
     override val tier: Tier,
-    private val apiKey: String? = null,
+    apiKey: String? = null,
     private val requiresKey: Boolean = tier == Tier.CLOUD,
     override val accepts: Set<Sensitivity> = setOf(Sensitivity.Public, Sensitivity.Personal),
     private val capabilities: Capabilities = Capabilities(),
@@ -81,14 +82,24 @@ public class OpenAiCompatible(
     override val id: ProviderId = ProviderId(id)
 
     private val root = baseUrl.trimEnd('/')
+    private val apiKey: String? = apiKey?.trim()
 
     // The executor owns first-token and stall timeouts and cancels the call. The read timeout here
     // is only a backstop, set above the executor's largest stall timeout (60 s).
+    //
+    // Redirects are never followed: a redirect would re-send the prompt, with any approved Personal
+    // items, to a host the app did not configure and the user did not approve (invariant A-1).
+    // OkHttp's silent retry is off so a request that is not safe to retry is never sent twice.
     private val streamClient = client.newBuilder()
+        .followRedirects(false)
+        .followSslRedirects(false)
+        .retryOnConnectionFailure(false)
         .connectTimeout(5, TimeUnit.SECONDS)
         .readTimeout(maxOf(client.readTimeoutMillis, 90_000).toLong(), TimeUnit.MILLISECONDS)
         .build()
     private val probeClient = client.newBuilder()
+        .followRedirects(false)
+        .followSslRedirects(false)
         .callTimeout(probeTimeout.inWholeMilliseconds, TimeUnit.MILLISECONDS)
         .build()
 
@@ -268,15 +279,19 @@ public class OpenAiCompatible(
         }
     }
 
-    /** An `error` object inside an otherwise successful stream. */
+    /**
+     * An `error` object inside an otherwise successful stream. The server had accepted the request
+     * and may have been generating, so apart from a context-length rejection these never map to a
+     * failure that proves the request was not processed.
+     */
     private fun streamError(error: JsonObject): ProviderFailure {
-        val code = error["code"]?.let { (it as? JsonPrimitive) }
+        val code = error["code"] as? JsonPrimitive
         val text = (code?.content.orEmpty() + " " + ((error["message"] as? JsonPrimitive)?.content.orEmpty())).lowercase()
+        val number = code?.intOrNull
         return when {
             CONTEXT_MARKERS.any { it in text } -> ProviderFailure.ContextTooLong(capabilities.maxContext)
-            code?.intOrNull == 429 -> ProviderFailure.RateLimited
-            code?.intOrNull == 401 || code?.intOrNull == 403 -> ProviderFailure.AuthRejected
-            (code?.intOrNull ?: 0) >= 500 -> ProviderFailure.Server(code!!.intOrNull!!)
+            number != null && number >= 500 -> ProviderFailure.Server(number)
+            number != null -> ProviderFailure.Other("stream error $number")
             else -> ProviderFailure.Other("stream error")
         }
     }
@@ -294,8 +309,7 @@ public class OpenAiCompatible(
     private companion object {
         val JSON = "application/json; charset=utf-8".toMediaType()
         val CONTEXT_MARKERS = listOf(
-            "context_length_exceeded", "context length", "context window", "maximum context",
-            "exceed_context_size", "too many tokens", "prompt is too long",
+            "context_length_exceeded", "context length", "maximum context", "exceed_context_size", "prompt is too long",
         )
     }
 }

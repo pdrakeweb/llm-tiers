@@ -1,5 +1,6 @@
 package io.github.pdrakeweb.llmtiers
 
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
@@ -139,7 +140,11 @@ public class TieredAi internal constructor(builder: TieredAiBuilder) {
 
         // 1. Privacy. Identifier items are removed here; nothing after this line can see them.
         val request = original.copy(data = original.data.filter { it.sensitivity != Sensitivity.Identifier })
-        val net = network.state.value
+        val net = try {
+            network.state.value
+        } catch (e: Exception) {
+            NetworkState.Unknown // a broken monitor must not break the request
+        }
 
         val infos = coroutineScope {
             providers.map { p ->
@@ -323,13 +328,27 @@ public class TieredAi internal constructor(builder: TieredAiBuilder) {
     private class ShortCircuitVerdict(val answer: Any?)
 
     /** Runs app or provider code so that an exception or a hang becomes null instead of spreading. */
-    private suspend fun <T : Any> guarded(timeout: Duration, block: suspend () -> T): T? =
-        try {
-            withTimeoutOrNull(timeout) { block() }
-        } catch (e: Throwable) {
-            currentCoroutineContext().ensureActive()
-            null
+    /**
+     * Like [runAttempt], the block runs in a job that is cancelled but not joined, so a callback
+     * that ignores cancellation (a `suspendCoroutine` that never resumes) cannot hang the request.
+     */
+    private suspend fun <T : Any> guarded(timeout: Duration, block: suspend () -> T): T? {
+        val outcome = CompletableDeferred<T?>()
+        val job = CoroutineScope(currentCoroutineContext().minusKey(Job)).launch {
+            outcome.complete(
+                try {
+                    block()
+                } catch (e: Throwable) {
+                    null
+                }
+            )
         }
+        return try {
+            withTimeoutOrNull(timeout) { outcome.await() }
+        } finally {
+            job.cancel()
+        }
+    }
 
     private fun MutableList<Attempt>.skip(provider: ProviderId, tier: Tier, reason: SkipReason, why: String) {
         record(Attempt(provider, tier, Outcome.Skipped(reason), why), "skipped")

@@ -32,7 +32,9 @@ public data class ProviderInfo(
 )
 
 public sealed interface ProviderEvent {
-    public data class Token(val text: String) : ProviderEvent
+    public data class Token(val text: String) : ProviderEvent {
+        override fun toString(): String = "Token(${text.length} chars)"
+    }
     public data class Done(val usage: Usage?) : ProviderEvent
 
     /** "I can't answer this; try the next tier." */

@@ -20,7 +20,11 @@ public sealed interface Result {
         val attempts: List<Attempt>,
         val discardPartial: Boolean,
         val incomplete: ProviderFailure? = null,
-    ) : Result
+    ) : Result {
+        /** Content-free, so an accidental `"$result"` in app logging does not leak the answer. */
+        override fun toString(): String =
+            "Answer(${text.length} chars, answeredBy=$answeredBy, tier=$tier, discardPartial=$discardPartial, incomplete=$incomplete, attempts=$attempts)"
+    }
 
     /** The app's short-circuit hook answered. No model ran. */
     public data class Answered(val shortCircuit: Any) : Result
@@ -104,10 +108,18 @@ public sealed interface SkipReason {
     }
 }
 
-/** What [TieredAi.stream] emits. The last event is always [Completed]. */
+/**
+ * What [TieredAi.stream] emits. The last event is always [Completed].
+ *
+ * Tokens shown to the user are provisional until `Completed`: clear them on a `FellBack` with
+ * `discardPartial`, and whenever the final result is not an [Result.Answer] (for example a
+ * provider streamed, escalated, and nothing else could answer).
+ */
 public sealed interface Event {
     public data class Started(val provider: ProviderId, val tier: Tier) : Event
-    public data class Token(val text: String) : Event
+    public data class Token(val text: String) : Event {
+        override fun toString(): String = "Token(${text.length} chars)"
+    }
 
     /**
      * The request moved from one provider to the next.
