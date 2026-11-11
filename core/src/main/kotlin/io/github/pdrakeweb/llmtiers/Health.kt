@@ -1,6 +1,10 @@
 package io.github.pdrakeweb.llmtiers
 
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlin.math.ceil
 import kotlin.time.Duration
+import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
 
@@ -61,24 +65,148 @@ public class HealthTracker(
     private val config: HealthConfig = HealthConfig(),
     private val timeouts: TimeoutConfig = TimeoutConfig(),
 ) {
-    public suspend fun snapshot(network: NetworkId): HealthSnapshot = TODO("T1: health")
+    private data class Key(val provider: ProviderId, val network: NetworkId)
 
-    public suspend fun state(provider: ProviderId, network: NetworkId): HealthState = TODO("T1: health")
+    private class Entry {
+        val failures = ArrayDeque<Long>()
+        var outUntil: Long? = null
+        var cooldown: Duration = Duration.ZERO
+        var probedAt: Long? = null
+    }
+
+    private class Latency {
+        val firstToken = ArrayDeque<Long>()
+        val gap = ArrayDeque<Long>()
+    }
+
+    private val mutex = Mutex()
+    private val entries = HashMap<Key, Entry>()
+    private val latency = HashMap<ProviderId, Latency>()
+
+    public suspend fun snapshot(network: NetworkId): HealthSnapshot = mutex.withLock {
+        val now = clock.nowMillis()
+        val ids = entries.keys.filter { it.network == network }.map { it.provider } + latency.keys
+        HealthSnapshot(ids.distinct().associateWith { id ->
+            ProviderHealth(
+                state = entries[Key(id, network)]?.state(now) ?: HealthState.Ready,
+                typicalFirstToken = latency[id]?.firstToken
+                    ?.takeIf { it.size >= TYPICAL_MIN_SAMPLES }?.let { percentile(it, TYPICAL_PERCENTILE).milliseconds },
+            )
+        })
+    }
+
+    public suspend fun state(provider: ProviderId, network: NetworkId): HealthState = mutex.withLock {
+        entries[Key(provider, network)]?.state(clock.nowMillis()) ?: HealthState.Ready
+    }
 
     /** Records a completed answer, with its first-token latency and longest gap between tokens. */
     public suspend fun recordSuccess(provider: ProviderId, network: NetworkId, firstToken: Duration?, maxGap: Duration?): Unit =
-        TODO("T1: health")
+        mutex.withLock {
+            entries[Key(provider, network)]?.apply {
+                failures.clear()
+                outUntil = null
+                cooldown = Duration.ZERO
+            }
+            val l = latency.getOrPut(provider) { Latency() }
+            firstToken?.let { l.firstToken.addCapped(it.inWholeMilliseconds) }
+            maxGap?.let { l.gap.addCapped(it.inWholeMilliseconds) }
+        }
 
-    public suspend fun recordFailure(provider: ProviderId, network: NetworkId, failure: ProviderFailure): Unit =
-        TODO("T1: health")
+    public suspend fun recordFailure(provider: ProviderId, network: NetworkId, failure: ProviderFailure): Unit = mutex.withLock {
+        // A prompt that is too long says something about the request, not about the provider.
+        if (failure is ProviderFailure.ContextTooLong) return@withLock
+        val now = clock.nowMillis()
+        val e = entries.getOrPut(Key(provider, network)) { Entry() }
+        e.probedAt = null
+        val until = e.outUntil
+        when {
+            // Failed while probing: out again, for twice as long.
+            until != null && now >= until -> e.goOut(now, minOf(e.cooldown * 2, config.maxCooldown))
+            until != null -> Unit // already out
+            else -> {
+                e.failures.addLast(now)
+                e.prune(now)
+                val immediate = immediateCooldown(failure)
+                when {
+                    immediate != null -> e.goOut(now, immediate)
+                    e.failures.size >= config.failureThreshold -> e.goOut(now, config.cooldown)
+                }
+            }
+        }
+    }
 
     /** True when a probe succeeded on this network recently enough to skip probing again. */
-    public suspend fun probeIsFresh(provider: ProviderId, network: NetworkId): Boolean = TODO("T1: health")
+    public suspend fun probeIsFresh(provider: ProviderId, network: NetworkId): Boolean = mutex.withLock {
+        val at = entries[Key(provider, network)]?.probedAt ?: return@withLock false
+        clock.nowMillis() - at < config.probeTtl.inWholeMilliseconds
+    }
 
-    public suspend fun recordProbeSuccess(provider: ProviderId, network: NetworkId): Unit = TODO("T1: health")
+    public suspend fun recordProbeSuccess(provider: ProviderId, network: NetworkId): Unit = mutex.withLock {
+        entries.getOrPut(Key(provider, network)) { Entry() }.probedAt = clock.nowMillis()
+    }
 
-    public suspend fun timeoutsFor(provider: ProviderId): AttemptTimeouts = TODO("T1: health")
+    public suspend fun timeoutsFor(provider: ProviderId): AttemptTimeouts = mutex.withLock {
+        val l = latency[provider]
+        AttemptTimeouts(
+            firstToken = learned(l?.firstToken, timeouts.firstToken),
+            stall = learned(l?.gap, timeouts.stall),
+        )
+    }
 
     /** Forgets everything about a provider, for example after the user fixes its key. */
-    public suspend fun reset(provider: ProviderId): Unit = TODO("T1: health")
+    public suspend fun reset(provider: ProviderId): Unit = mutex.withLock {
+        entries.keys.removeAll { it.provider == provider }
+        latency.remove(provider)
+    }
+
+    private fun learned(samples: ArrayDeque<Long>?, default: Duration): Duration {
+        if (samples == null || samples.size < timeouts.learnAfter) return default
+        val value = (percentile(samples, timeouts.percentile) * timeouts.margin).toLong().milliseconds
+        return value.coerceIn(timeouts.min, timeouts.max)
+    }
+
+    /** Failures that say "not now" outright take the provider out without waiting for a pattern. */
+    private fun immediateCooldown(failure: ProviderFailure): Duration? = when (failure) {
+        ProviderFailure.Busy, ProviderFailure.RateLimited -> config.shortCooldown
+        ProviderFailure.Unreachable, ProviderFailure.ModelNotReady, ProviderFailure.LocalNetworkPermissionDenied,
+        ProviderFailure.AuthRejected, ProviderFailure.KeyMissing -> config.cooldown
+        ProviderFailure.Timeout, ProviderFailure.FirstTokenTimeout, ProviderFailure.Stalled,
+        is ProviderFailure.ContextTooLong, is ProviderFailure.Server, is ProviderFailure.Other -> null
+    }
+
+    private fun Entry.goOut(now: Long, duration: Duration) {
+        cooldown = duration
+        outUntil = now + duration.inWholeMilliseconds
+        failures.clear()
+    }
+
+    private fun Entry.prune(now: Long) {
+        val oldest = now - config.window.inWholeMilliseconds
+        while (failures.isNotEmpty() && failures.first() <= oldest) failures.removeFirst()
+    }
+
+    private fun Entry.state(now: Long): HealthState {
+        val until = outUntil
+        if (until != null) return if (now < until) HealthState.Out else HealthState.Probing
+        prune(now)
+        return if (failures.isEmpty()) HealthState.Ready else HealthState.Caution
+    }
+
+    private fun ArrayDeque<Long>.addCapped(value: Long) {
+        addLast(value)
+        if (size > MAX_SAMPLES) removeFirst()
+    }
+
+    /** Nearest-rank percentile. */
+    private fun percentile(samples: Collection<Long>, p: Double): Long {
+        val sorted = samples.sorted()
+        val rank = ceil(p * sorted.size).toInt().coerceIn(1, sorted.size)
+        return sorted[rank - 1]
+    }
+
+    private companion object {
+        const val MAX_SAMPLES = 100
+        const val TYPICAL_MIN_SAMPLES = 5
+        const val TYPICAL_PERCENTILE = 0.9
+    }
 }
