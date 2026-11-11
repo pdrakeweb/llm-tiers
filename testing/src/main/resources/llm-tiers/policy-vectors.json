@@ -1,0 +1,259 @@
+{
+  "format": 1,
+  "about": "Routing policy vectors for llm-tiers. Each vector is one call to plan(request, providers, health, network). 'providers' is the app's configured order. Defaults: accepts [Public, Personal], vision false, jsonSchema false, maxContext 4096, network Wifi, mode AppOrder, health Ready. 'data' lists the sensitivities of the request's data items. 'expect.steps' is the ordered plan; 'expect.skipped' maps provider id to the skip reason code. See testing/POLICY_VECTORS.md.",
+  "providerSets": {
+    "trio": [
+      { "id": "home", "tier": "LAN", "vision": true, "jsonSchema": true, "maxContext": 32768 },
+      { "id": "cloud", "tier": "CLOUD", "vision": true, "jsonSchema": true, "maxContext": 128000 },
+      { "id": "nano", "tier": "ON_DEVICE" }
+    ],
+    "cloudPublicOnly": [
+      { "id": "home", "tier": "LAN", "vision": true, "jsonSchema": true, "maxContext": 32768 },
+      { "id": "cloud", "tier": "CLOUD", "accepts": ["Public"], "jsonSchema": true, "maxContext": 128000 },
+      { "id": "nano", "tier": "ON_DEVICE" }
+    ]
+  },
+  "vectors": [
+    {
+      "name": "app order is used when the request has no mode",
+      "providers": "trio",
+      "expect": { "steps": [{ "id": "home" }, { "id": "cloud" }, { "id": "nano" }] }
+    },
+    {
+      "name": "PreferOnDevice moves on-device providers to the front and keeps the rest in app order",
+      "providers": "trio",
+      "request": { "mode": "PreferOnDevice" },
+      "expect": { "steps": [{ "id": "nano" }, { "id": "home" }, { "id": "cloud" }] }
+    },
+    {
+      "name": "PreferLan moves LAN providers to the front",
+      "providers": [
+        { "id": "cloud", "tier": "CLOUD" },
+        { "id": "nano", "tier": "ON_DEVICE" },
+        { "id": "home", "tier": "LAN" }
+      ],
+      "request": { "mode": "PreferLan" },
+      "expect": { "steps": [{ "id": "home" }, { "id": "cloud" }, { "id": "nano" }] }
+    },
+    {
+      "name": "PreferCloud moves cloud providers to the front",
+      "providers": "trio",
+      "request": { "mode": "PreferCloud" },
+      "expect": { "steps": [{ "id": "cloud" }, { "id": "home" }, { "id": "nano" }] }
+    },
+    {
+      "name": "OnlyOnDevice excludes every other tier",
+      "providers": "trio",
+      "request": { "mode": "OnlyOnDevice" },
+      "expect": {
+        "steps": [{ "id": "nano" }],
+        "skipped": { "home": "ExcludedByMode:OnlyOnDevice", "cloud": "ExcludedByMode:OnlyOnDevice" }
+      }
+    },
+    {
+      "name": "OnlyCloud excludes every other tier",
+      "providers": "trio",
+      "request": { "mode": "OnlyCloud" },
+      "expect": {
+        "steps": [{ "id": "cloud" }],
+        "skipped": { "home": "ExcludedByMode:OnlyCloud", "nano": "ExcludedByMode:OnlyCloud" }
+      }
+    },
+    {
+      "name": "Personal data needs approval for LAN and cloud, never for on-device",
+      "providers": "trio",
+      "request": { "data": ["Public", "Personal"] },
+      "expect": {
+        "steps": [
+          { "id": "home", "needsApproval": true },
+          { "id": "cloud", "needsApproval": true },
+          { "id": "nano" }
+        ]
+      }
+    },
+    {
+      "name": "Identifier items are removed before planning, so they change nothing",
+      "providers": "trio",
+      "request": { "data": ["Identifier", "Public"] },
+      "expect": { "steps": [{ "id": "home" }, { "id": "cloud" }, { "id": "nano" }] }
+    },
+    {
+      "name": "a provider that does not accept Personal data is skipped, not asked",
+      "providers": "cloudPublicOnly",
+      "request": { "data": ["Personal"] },
+      "expect": {
+        "steps": [{ "id": "home", "needsApproval": true }, { "id": "nano" }],
+        "skipped": { "cloud": "SensitivityNotAccepted:Personal" }
+      }
+    },
+    {
+      "name": "privacy can leave no provider: nothing is planned rather than sent anyway",
+      "providers": "cloudPublicOnly",
+      "request": { "data": ["Personal"], "mode": "OnlyCloud" },
+      "expect": {
+        "steps": [],
+        "skipped": {
+          "cloud": "SensitivityNotAccepted:Personal",
+          "home": "ExcludedByMode:OnlyCloud",
+          "nano": "ExcludedByMode:OnlyCloud"
+        }
+      }
+    },
+    {
+      "name": "a provider that accepts only Personal data is skipped for a Public item",
+      "providers": [
+        { "id": "vault", "tier": "ON_DEVICE", "accepts": ["Personal"] },
+        { "id": "cloud", "tier": "CLOUD" }
+      ],
+      "request": { "data": ["Public"] },
+      "expect": { "steps": [{ "id": "cloud" }], "skipped": { "vault": "SensitivityNotAccepted:Public" } }
+    },
+    {
+      "name": "privacy is decided before capability: the privacy reason is the one reported",
+      "providers": "cloudPublicOnly",
+      "request": { "data": ["Personal"], "vision": true },
+      "expect": {
+        "steps": [{ "id": "home", "needsApproval": true }],
+        "skipped": { "cloud": "SensitivityNotAccepted:Personal", "nano": "MissingCapability:vision" }
+      }
+    },
+    {
+      "name": "a request with an image skips providers without vision",
+      "providers": "trio",
+      "request": { "vision": true },
+      "expect": {
+        "steps": [{ "id": "home" }, { "id": "cloud" }],
+        "skipped": { "nano": "MissingCapability:vision" }
+      }
+    },
+    {
+      "name": "structured JSON output skips providers without JSON-schema support",
+      "providers": "trio",
+      "request": { "jsonSchema": true },
+      "expect": {
+        "steps": [{ "id": "home" }, { "id": "cloud" }],
+        "skipped": { "nano": "MissingCapability:jsonSchema" }
+      }
+    },
+    {
+      "name": "a context requirement skips providers whose context is too short",
+      "providers": "trio",
+      "request": { "minContext": 64000 },
+      "expect": {
+        "steps": [{ "id": "cloud" }],
+        "skipped": { "home": "MissingCapability:context", "nano": "MissingCapability:context" }
+      }
+    },
+    {
+      "name": "a pinned provider is the whole plan",
+      "providers": "trio",
+      "request": { "pin": "cloud" },
+      "expect": { "steps": [{ "id": "cloud" }], "skipped": { "home": "NotPinned", "nano": "NotPinned" } }
+    },
+    {
+      "name": "a pin is the user's explicit choice and overrides the mode",
+      "providers": "trio",
+      "request": { "pin": "nano", "mode": "OnlyCloud" },
+      "expect": { "steps": [{ "id": "nano" }], "skipped": { "home": "NotPinned", "cloud": "NotPinned" } }
+    },
+    {
+      "name": "a pinned provider that is cooling down is still tried: the user chose it",
+      "providers": "trio",
+      "request": { "pin": "home" },
+      "health": { "home": { "state": "Out" } },
+      "expect": { "steps": [{ "id": "home" }], "skipped": { "cloud": "NotPinned", "nano": "NotPinned" } }
+    },
+    {
+      "name": "a pinned provider still needs approval for Personal data",
+      "providers": "trio",
+      "request": { "pin": "cloud", "data": ["Personal"] },
+      "expect": {
+        "steps": [{ "id": "cloud", "needsApproval": true }],
+        "skipped": { "home": "NotPinned", "nano": "NotPinned" }
+      }
+    },
+    {
+      "name": "a pinned provider that cannot handle the request is not replaced",
+      "providers": "trio",
+      "request": { "pin": "nano", "vision": true },
+      "expect": {
+        "steps": [],
+        "skipped": { "nano": "MissingCapability:vision", "home": "NotPinned", "cloud": "NotPinned" }
+      }
+    },
+    {
+      "name": "a pinned cloud provider is skipped when offline, and nothing replaces it",
+      "providers": "trio",
+      "request": { "pin": "cloud" },
+      "network": "None",
+      "expect": { "steps": [], "skipped": { "cloud": "Offline", "home": "NotPinned", "nano": "NotPinned" } }
+    },
+    {
+      "name": "a provider that is cooling down is skipped",
+      "providers": "trio",
+      "health": { "home": { "state": "Out" } },
+      "expect": { "steps": [{ "id": "cloud" }, { "id": "nano" }], "skipped": { "home": "CoolingDown" } }
+    },
+    {
+      "name": "Caution and Probing providers stay in the plan",
+      "providers": "trio",
+      "health": { "home": { "state": "Probing" }, "cloud": { "state": "Caution" } },
+      "expect": { "steps": [{ "id": "home" }, { "id": "cloud" }, { "id": "nano" }] }
+    },
+    {
+      "name": "offline leaves only on-device providers",
+      "providers": "trio",
+      "network": "None",
+      "expect": { "steps": [{ "id": "nano" }], "skipped": { "home": "Offline", "cloud": "Offline" } }
+    },
+    {
+      "name": "offline with OnlyCloud leaves nothing; mode is reported before health",
+      "providers": "trio",
+      "request": { "mode": "OnlyCloud" },
+      "network": "None",
+      "expect": {
+        "steps": [],
+        "skipped": { "home": "ExcludedByMode:OnlyCloud", "cloud": "Offline", "nano": "ExcludedByMode:OnlyCloud" }
+      }
+    },
+    {
+      "name": "cellular is online: LAN is still planned and left to its fast probe",
+      "providers": "trio",
+      "network": "Cellular",
+      "expect": { "steps": [{ "id": "home" }, { "id": "cloud" }, { "id": "nano" }] }
+    },
+    {
+      "name": "a latency budget moves the first provider known to meet it to the front",
+      "providers": "trio",
+      "request": { "budgetFirstTokenMs": 1000 },
+      "health": { "home": { "typicalFirstTokenMs": 3000 }, "cloud": { "typicalFirstTokenMs": 400 } },
+      "expect": { "steps": [{ "id": "cloud" }, { "id": "home" }, { "id": "nano" }] }
+    },
+    {
+      "name": "a latency budget changes nothing when the first choice has no history",
+      "providers": "trio",
+      "request": { "budgetFirstTokenMs": 1000 },
+      "health": { "cloud": { "typicalFirstTokenMs": 400 } },
+      "expect": { "steps": [{ "id": "home" }, { "id": "cloud" }, { "id": "nano" }] }
+    },
+    {
+      "name": "a latency budget changes nothing when no provider is known to meet it",
+      "providers": "trio",
+      "request": { "budgetFirstTokenMs": 100 },
+      "health": { "home": { "typicalFirstTokenMs": 3000 }, "cloud": { "typicalFirstTokenMs": 400 } },
+      "expect": { "steps": [{ "id": "home" }, { "id": "cloud" }, { "id": "nano" }] }
+    },
+    {
+      "name": "the budget applies after the mode: it reorders the mode's result",
+      "providers": "trio",
+      "request": { "mode": "PreferOnDevice", "budgetFirstTokenMs": 1000 },
+      "health": { "nano": { "typicalFirstTokenMs": 2500 }, "home": { "typicalFirstTokenMs": 300 } },
+      "expect": { "steps": [{ "id": "home" }, { "id": "nano" }, { "id": "cloud" }] }
+    },
+    {
+      "name": "no providers gives an empty plan",
+      "providers": [],
+      "expect": { "steps": [] }
+    }
+  ]
+}
