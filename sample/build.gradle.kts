@@ -29,4 +29,5 @@ dependencies {
     implementation(project(":core"))
     implementation(project(":android"))
     implementation(project(":openai"))
+    implementation(libs.coroutines.android)
 }

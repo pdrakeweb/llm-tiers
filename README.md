@@ -4,8 +4,8 @@ One AI call for Android apps that runs in the best available place — on the de
 on the person's home network, or in the cloud — falls back when one isn't available, and never
 sends data a request isn't allowed to send.
 
-**Status:** T1 (core) implemented: `:core`, `:openai`, `:testing`. Android modules (T2, T3) not
-started. Not yet published.
+**Status:** T1 (core) and T2 (Android) implemented. On-device model downloads (T3) not started.
+Not yet published.
 
 ```kotlin
 val ai = TieredAi {
@@ -32,11 +32,13 @@ when (val result = ai.generate(Request(listOf(user("Build a 30-minute session…
 |---|---|
 | `:core` | Pure Kotlin. Request and result types, the routing policy (`plan()`, a pure function), health tracking, and the executor: timeouts, fallback, escalation, pinning, retry safety. No Android or network types (build guard) |
 | `:openai` | Streaming client for any OpenAI-compatible server (OpenRouter, LiteLLM, llama.cpp, Ollama, vLLM) over OkHttp |
+| `:android` | Network monitor, private-address rule for plain HTTP, local-network permission helper, Gemini Nano provider. See [`docs/ANDROID.md`](docs/ANDROID.md) |
+| `:sample` | A one-screen app: provider settings, a prompt box, and a log of where each request ran and why |
 | `:testing` | Fake providers with scripted latency and failures, fake clocks, a scripted network monitor, and the policy vectors as JSON |
 
 ## Build and test
 
-JDK 17 or newer.
+JDK 17 or newer. The Android modules also need the Android SDK (platform 37, build tools 36).
 
 ```bash
 ./gradlew build
