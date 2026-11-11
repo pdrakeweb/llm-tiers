@@ -8,7 +8,6 @@ dependencies {
     testImplementation(project(":testing"))
     testImplementation(libs.kotlin.test)
     testImplementation(libs.junit.jupiter)
-    testImplementation(libs.kotest.property)
     testRuntimeOnly(libs.junit.launcher)
 }
 
@@ -22,7 +21,7 @@ val forbiddenImports = Regex(
     """^\s*import\s+(android\.|androidx\.|java\.net\.|javax\.net\.|okhttp3\.|okio\.|io\.ktor\.|retrofit2\.)"""
 )
 
-val checkCorePurity by tasks.registering {
+val checkCorePurity = tasks.register("checkCorePurity") {
     description = "Fails if :core depends on Android or a network library."
     group = "verification"
     val runtime = configurations.runtimeClasspath
