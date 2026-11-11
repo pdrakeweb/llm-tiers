@@ -1,10 +1,10 @@
-# tiered-ai
+# llm-tiers
 
 One AI call for Android apps that runs in the best available place — on the device, on a server
 on the person's home network, or in the cloud — falls back when one isn't available, and never
 sends data a request isn't allowed to send.
 
-**Status:** design. No code yet. Working name.
+**Status:** design. No code yet.
 
 | Doc | What it answers |
 |---|---|

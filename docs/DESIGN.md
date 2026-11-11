@@ -1,11 +1,11 @@
-# tiered-ai — design
+# llm-tiers — design
 
 A **standalone, permissively licensed (Apache 2.0) library that any Android app can use**
 (D-001). It sends each AI request to the best available place — on the device, a server on
 the person's home network, or a cloud provider — falls back when one isn't available, and never
 sends data a request isn't allowed to send. NextRep is the first consumer. The Android app skill
 will recommend it, either as a dependency or as a pattern to copy for apps that would rather not
-take one. Working name `tiered-ai`; rename before first publish.
+take one. Name chosen by Pete (D-007); Maven namespace decided before 0.1.0.
 
 Pete's requirement (verbatim): *"we should write these as libraries that can be leveraged by ANY
 android app (with a permissive license) and then the skill should recommend them as dependencies
@@ -57,7 +57,7 @@ ViewModel. What held up in real use, and what the library should do differently:
 | Only one provider per tier; no LAN tier; no provider chain | **Change**: ordered chains per tier, LAN tier with private-address rules |
 
 **Conclusion:** no existing library covers on-device + LAN + any cloud with privacy rules and
-real failure handling. Each solves one slice well. `tiered-ai` is a small routing core built from
+real failure handling. Each solves one slice well. `llm-tiers` is a small routing core built from
 the best of each, with thin adapters so apps can reuse providers they already have (Firebase,
 Koog).
 
@@ -196,7 +196,7 @@ when (result) {
 | T3 | `:model-manager` + LiteRT-LM provider |
 | T4 | First consumer integration (NextRep); optional `:firebase` and `:koog` adapters |
 | T5 | First release (Apache 2.0, Maven Central); the Android skill recommends it (dependency or pattern) |
-| Follow-up | **Move SeaWhisper onto `tiered-ai`** once T2 ships (D-004) |
+| Follow-up | **Move SeaWhisper onto `llm-tiers`** once T2 ships (D-004) |
 
 Open questions for Pete: library name; whether to publish under a personal namespace or an
 organisation; whether the `:openai` client should wrap an existing Kotlin OpenAI client or stay

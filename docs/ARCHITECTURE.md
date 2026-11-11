@@ -1,4 +1,4 @@
-# tiered-ai — architecture
+# llm-tiers — architecture
 
 How the library is built. Behaviour is in `DESIGN.md`; keep the two in step.
 

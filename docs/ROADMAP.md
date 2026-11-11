@@ -1,4 +1,4 @@
-# tiered-ai — roadmap
+# llm-tiers — roadmap
 
 | Milestone | Delivers | Proven by |
 |---|---|---|

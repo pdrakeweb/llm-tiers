@@ -1,4 +1,4 @@
-# CLAUDE.md — tiered-ai
+# CLAUDE.md — llm-tiers
 
 A standalone Kotlin library that routes AI requests across on-device, LAN and cloud providers
 with privacy rules and real failover. Apache 2.0. First consumer: NextRep (`pdrakeweb/nextrep`);

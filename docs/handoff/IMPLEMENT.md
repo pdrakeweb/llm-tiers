@@ -1,4 +1,4 @@
-# Handoff — implement tiered-ai
+# Handoff — implement llm-tiers
 
 For the Claude Code session that builds this library. You have no memory of the planning
 conversation; this repo's docs are the spec.
@@ -14,6 +14,6 @@ conversation; this repo's docs are the spec.
 5. Every milestone ends with its "proven by" column demonstrated. Contract tests against Pete's LAN
    server and OpenRouter are opt-in and read endpoints/keys from the environment; never commit a key.
 6. The three invariants in `CLAUDE.md` are pasted verbatim into any review or fix prompt.
-7. Stop and ask Pete before choosing the final name or Maven namespace.
+7. Stop and ask Pete before choosing the Maven namespace.
 8. At the end of each milestone, summarise: what was built, what was proven and how, what is
    blocked, and the PR link.
