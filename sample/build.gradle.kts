@@ -29,5 +29,6 @@ dependencies {
     implementation(project(":core"))
     implementation(project(":android"))
     implementation(project(":openai"))
+    implementation(project(":model-manager"))
     implementation(libs.coroutines.android)
 }

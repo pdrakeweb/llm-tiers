@@ -16,4 +16,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "llm-tiers"
 
-include(":core", ":openai", ":testing", ":android", ":sample")
+include(":core", ":openai", ":testing", ":android", ":model-manager", ":sample")
