@@ -30,9 +30,13 @@ import io.github.pdrakeweb.llmtiers.TieredAi
 import io.github.pdrakeweb.llmtiers.android.ACCESS_LOCAL_NETWORK
 import io.github.pdrakeweb.llmtiers.android.AndroidNetworkMonitor
 import io.github.pdrakeweb.llmtiers.android.GeminiNano
+import io.github.pdrakeweb.llmtiers.android.LiteRtModel
 import io.github.pdrakeweb.llmtiers.android.needsLocalNetworkPermission
 import io.github.pdrakeweb.llmtiers.android.privateCleartextOnly
 import io.github.pdrakeweb.llmtiers.android.requiringLocalNetworkPermission
+import io.github.pdrakeweb.llmtiers.modelmanager.ModelManager
+import io.github.pdrakeweb.llmtiers.modelmanager.ModelSpec
+import io.github.pdrakeweb.llmtiers.modelmanager.ModelState
 import io.github.pdrakeweb.llmtiers.openai.OpenAiCompatible
 import io.github.pdrakeweb.llmtiers.user
 import kotlinx.coroutines.CoroutineScope
@@ -49,7 +53,8 @@ import kotlin.coroutines.resume
  * A prompt box, the provider chain, and a log of where each request ran and why.
  *
  * Every field can also be set from launch extras (same names as [Config]'s properties, plus
- * `prompt`, `personal`, `autoApprove` and `autoSend`), which is how the journey script drives it.
+ * `prompt`, `personal`, `autoApprove`, `autoSend` and `modelAction` = `download` or `delete`),
+ * which is how the journey scripts drive it.
  * The cloud key is held in memory only.
  */
 class MainActivity : Activity() {
@@ -62,6 +67,9 @@ class MainActivity : Activity() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private lateinit var monitor: AndroidNetworkMonitor
     private val nano = GeminiNano()
+    private lateinit var models: ModelManager
+    private val local = LiteRtModel("local") { modelSpec()?.let { (models.state(it) as? ModelState.Ready)?.file } }
+    private var watching: Job? = null
     private val http = OkHttpClient.Builder().privateCleartextOnly().build()
 
     private var built: Pair<Config, TieredAi>? = null
@@ -82,10 +90,15 @@ class MainActivity : Activity() {
     private lateinit var answer: TextView
     private lateinit var log: TextView
     private lateinit var grant: Button
+    private lateinit var modelUrl: EditText
+    private lateinit var modelSha: EditText
+    private lateinit var modelSize: EditText
+    private lateinit var modelStatus: TextView
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         monitor = AndroidNetworkMonitor(this)
+        models = ModelManager(this)
         autoApprove = intent.getBooleanExtra("autoApprove", false)
 
         val column = LinearLayout(this).apply {
@@ -123,9 +136,9 @@ class MainActivity : Activity() {
         cloudUrl = field("cloudUrl", "Cloud URL", "https://openrouter.ai/api/v1")
         cloudModel = field("cloudModel", "Cloud model")
         cloudKey = field("cloudKey", "Cloud API key (kept in memory only)", secret = true)
-        order = field("order", "Provider chain, in order (home, cloud, nano)", "home,cloud,nano")
+        order = field("order", "Provider chain, in order (home, cloud, nano, local)", "home,cloud,nano,local")
         mode = spinner("mode", "Mode", Mode.entries.map { it.name })
-        pin = spinner("pin", "Pin to one provider", listOf("(none)", "home", "cloud", "nano"))
+        pin = spinner("pin", "Pin to one provider", listOf("(none)", "home", "cloud", "nano", "local"))
         prompt = field("prompt", "Prompt", "Say hello in five words.")
         personal = field("personal", "Personal note to send with it (asks before it leaves the device)")
         Button(this).apply {
@@ -134,6 +147,21 @@ class MainActivity : Activity() {
             setOnClickListener { send() }
         }.also(column::addView)
         answer = TextView(this).apply { textSize = 16f; setTextIsSelectable(true) }.also(column::addView)
+
+        label("Downloaded on-device model (\"local\" in the chain)")
+        modelUrl = field("modelUrl", "Model file URL (.litertlm)")
+        modelSha = field("modelSha", "SHA-256 of the file")
+        modelSize = field("modelSize", "Size in bytes")
+        modelStatus = TextView(this).also(column::addView)
+        Button(this).apply {
+            text = "Download model (Wi-Fi only)"
+            setOnClickListener { modelAction("download") }
+        }.also(column::addView)
+        Button(this).apply {
+            text = "Delete model"
+            setOnClickListener { modelAction("delete") }
+        }.also(column::addView)
+
         label("Where each request ran, and why")
         log = TextView(this).apply { textSize = 12f; setTextIsSelectable(true) }.also(column::addView)
 
@@ -143,6 +171,12 @@ class MainActivity : Activity() {
                 addView(column, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
             }
         )
+        column.post {
+            when (val action = intent.getStringExtra("modelAction")) {
+                null -> watchModel() // a cold start: pick up whatever state the model was left in
+                else -> modelAction(action)
+            }
+        }
         if (intent.getBooleanExtra("autoSend", false)) column.post { send() }
     }
 
@@ -161,6 +195,7 @@ class MainActivity : Activity() {
         scope.cancel()
         monitor.close()
         nano.close()
+        local.close()
         super.onDestroy()
     }
 
@@ -171,6 +206,45 @@ class MainActivity : Activity() {
             val network = monitor.state.value
             status.text = "Network: ${network.kind}   Gemini Nano: ${nano.status()}" +
                 if (missing) "\nLocal network permission not granted: the home server is skipped." else ""
+        }
+    }
+
+    private fun modelSpec(): ModelSpec? = runCatching {
+        ModelSpec("local", modelUrl.text.toString().trim(), modelSha.text.toString().trim(), modelSize.text.toString().trim().toLong())
+    }.getOrNull()
+
+    private fun modelAction(action: String) {
+        val spec = modelSpec()
+        if (spec == null) {
+            modelStatus.text = "Enter the model URL, its SHA-256 and its size first."
+            return
+        }
+        scope.launch {
+            if (action == "delete") models.delete(spec) else models.download(spec)
+            watchModel()
+        }
+    }
+
+    /** Shows the model's state and follows a download to its end. */
+    private fun watchModel() {
+        val spec = modelSpec() ?: return
+        watching?.cancel()
+        watching = scope.launch {
+            models.observe(spec).collect { state ->
+                modelStatus.text = when (state) {
+                    ModelState.Missing -> "Not downloaded (${spec.sizeBytes / 1_000_000} MB)"
+                    is ModelState.Downloading -> "Downloading ${state.bytesDownloaded / 1_000_000} of ${state.totalBytes / 1_000_000} MB"
+                    is ModelState.Ready -> "Ready"
+                    is ModelState.Failed -> "Failed: ${state.reason}" + if (state.recoverable) " (try again)" else ""
+                }
+                // For the journey script: state names and byte counts only.
+                Log.i(TAG, "MODEL " + when (state) {
+                    ModelState.Missing -> "Missing"
+                    is ModelState.Downloading -> "Downloading bytes=${state.bytesDownloaded}"
+                    is ModelState.Ready -> "Ready bytes=${state.file.length()}"
+                    is ModelState.Failed -> "Failed reason=${state.reason} recoverable=${state.recoverable}"
+                })
+            }
         }
     }
 
@@ -201,6 +275,7 @@ class MainActivity : Activity() {
                         )
                     }
                     "nano" -> provider(nano)
+                    "local" -> provider(local)
                 }
             }
             network = monitor

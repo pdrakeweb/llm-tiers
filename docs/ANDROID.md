@@ -76,6 +76,36 @@ the foreground. Elsewhere `probe()` reports `ModelNotReady` and the router moves
 and `nano.download()` are for a settings screen. Its context is about 4,000 tokens and it has no
 JSON-schema output, so requests that need more are routed past it.
 
+## Downloaded models (LiteRT-LM)
+
+For phones without Gemini Nano, an app can download an open model and run it on the device.
+
+```kotlin
+val models = ModelManager(context)                       // :model-manager
+val spec = ModelSpec("gemma-text", url = "https://…/model.litertlm", sha256 = "…", sizeBytes = 1_234_567_890)
+val local = LiteRtModel("gemma-text") { (models.state(spec) as? ModelState.Ready)?.file }
+provider(local)
+```
+
+- **Show the size first.** `spec.sizeBytes` is known before anything is fetched.
+- **Download.** `models.download(spec)` hands the job to Android's system `DownloadManager`, so it
+  carries on when the user leaves the screen or the app is killed, and resumes after a dropped
+  connection. It waits for Wi-Fi unless called with `allowMetered = true`.
+- **Follow it.** `models.observe(spec)` emits `Missing`, `Downloading(bytes, total)`, then
+  `Ready(file)` or `Failed(reason, recoverable)`. Call `models.state(spec)` on every cold start.
+- **Verified.** A finished download must match the spec's size and SHA-256 or it is deleted and
+  reported as `SizeMismatch` or `ChecksumMismatch`. A file the library did not verify is never
+  used.
+- **Delete.** `models.delete(spec)` cancels any download and removes the file.
+
+Loading a model takes seconds. Call `local.warmUp()` when the app opens; otherwise the first
+request may time out while the model loads (the load carries on, and the next request is fast).
+The provider runs one request at a time and reports `Busy` to a second.
+
+Host the model on a public HTTPS URL. On Android 17 the system `DownloadManager` cannot reach
+local-network addresses at all (the download stays pending without an error), so a model served
+from a home server will not download.
+
 ## Sample app and journey
 
 `:sample` is a single screen: provider settings, a prompt box, and a log of where each request ran
@@ -89,4 +119,12 @@ two fake endpoints on the development computer.
 
 ```bash
 bash sample/journey/journey.sh
+```
+
+`sample/journey/journey-models.sh` covers downloads with a fake 8 MB file: the download survives
+the app being killed, a wrong checksum is reported, the model can be deleted, and a file that is
+not a real model gives `ModelNotReady` rather than a crash.
+
+```bash
+bash sample/journey/journey-models.sh
 ```
