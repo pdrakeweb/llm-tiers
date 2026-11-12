@@ -30,19 +30,19 @@ class ContractTest {
     private fun env(name: String): String? = System.getenv(name)?.takeIf { it.isNotBlank() }
 
     @Test
-    fun `LAN endpoint (LiteLLM or llama_cpp) streams an answer`() {
+    fun `self-hosted endpoint (LiteLLM or llama_cpp) streams an answer`() {
         val baseUrl = env("LLM_TIERS_LAN_BASE_URL")
         val model = env("LLM_TIERS_LAN_MODEL")
         assumeTrue(baseUrl != null && model != null, "set LLM_TIERS_LAN_BASE_URL and LLM_TIERS_LAN_MODEL to run")
-        streamsAnAnswer(OpenAiCompatible("lan", baseUrl!!, model!!, Tier.LAN, apiKey = env("LLM_TIERS_LAN_API_KEY"), maxTokens = 1024))
+        streamsAnAnswer(OpenAiCompatible("lan", baseUrl!!, model!!, apiKey = env("LLM_TIERS_LAN_API_KEY"), maxTokens = 1024))
     }
 
     @Test
-    fun `LAN endpoint streams a longer answer in several chunks`() {
+    fun `self-hosted endpoint streams a longer answer in several chunks`() {
         val baseUrl = env("LLM_TIERS_LAN_BASE_URL")
         val model = env("LLM_TIERS_LAN_MODEL")
         assumeTrue(baseUrl != null && model != null, "set LLM_TIERS_LAN_BASE_URL and LLM_TIERS_LAN_MODEL to run")
-        streamsALongerAnswer(OpenAiCompatible("lan", baseUrl!!, model!!, Tier.LAN, apiKey = env("LLM_TIERS_LAN_API_KEY"), maxTokens = 4096))
+        streamsALongerAnswer(OpenAiCompatible("lan", baseUrl!!, model!!, apiKey = env("LLM_TIERS_LAN_API_KEY"), maxTokens = 4096))
     }
 
     @Test
@@ -50,7 +50,7 @@ class ContractTest {
         val key = env("LLM_TIERS_OPENROUTER_API_KEY")
         val model = env("LLM_TIERS_OPENROUTER_MODEL")
         assumeTrue(key != null && model != null, "set LLM_TIERS_OPENROUTER_API_KEY and LLM_TIERS_OPENROUTER_MODEL to run")
-        streamsALongerAnswer(OpenAiCompatible("openrouter", "https://openrouter.ai/api/v1", model!!, Tier.CLOUD, apiKey = key, maxTokens = 4096))
+        streamsALongerAnswer(OpenAiCompatible("openrouter", "https://openrouter.ai/api/v1", model!!, requiresKey = true, probeBeforeUse = false, apiKey = key, maxTokens = 4096))
     }
 
     @Test
@@ -58,7 +58,7 @@ class ContractTest {
         val key = env("LLM_TIERS_OPENROUTER_API_KEY")
         val model = env("LLM_TIERS_OPENROUTER_MODEL")
         assumeTrue(key != null && model != null, "set LLM_TIERS_OPENROUTER_API_KEY and LLM_TIERS_OPENROUTER_MODEL to run")
-        streamsAnAnswer(OpenAiCompatible("openrouter", "https://openrouter.ai/api/v1", model!!, Tier.CLOUD, apiKey = key, maxTokens = 1024))
+        streamsAnAnswer(OpenAiCompatible("openrouter", "https://openrouter.ai/api/v1", model!!, requiresKey = true, probeBeforeUse = false, apiKey = key, maxTokens = 1024))
     }
 
     @Test
@@ -66,7 +66,7 @@ class ContractTest {
         assumeTrue(env("LLM_TIERS_OPENROUTER_API_KEY") != null, "set LLM_TIERS_OPENROUTER_API_KEY to run")
         val provider = OpenAiCompatible(
             "openrouter", "https://openrouter.ai/api/v1", env("LLM_TIERS_OPENROUTER_MODEL") ?: "openrouter/auto",
-            Tier.CLOUD, apiKey = "sk-or-v1-deliberately-invalid",
+            apiKey = "sk-or-v1-deliberately-invalid",
         )
         val result = runBlocking { withTimeout(60.seconds) { TieredAi { provider(provider) }.generate(Request(listOf(user("hi")))) } }
         assertIs<Result.NoneAvailable>(result)

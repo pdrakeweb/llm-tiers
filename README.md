@@ -1,16 +1,18 @@
 # llm-tiers
 
-One AI call for Android apps that runs in the best available place — on the device, on a server
-on the person's home network, or in the cloud — falls back when one isn't available, and never
-sends data a request isn't allowed to send.
+One AI call for Android apps that runs in the best available place — on the device, or on any
+remote OpenAI-compatible endpoint (a server on the home network, a self-hosted gateway, a cloud
+service) — falls back when one isn't available, and never sends data a request isn't allowed to
+send.
 
 **Status:** T1 (core), T2 (Android) and T3 (downloaded on-device models) implemented. Adapters and
 the first consumer integration (T4) not started. Not yet published.
 
 ```kotlin
 val ai = TieredAi {
-    provider(OpenAiCompatible("home-llama", "http://192.168.1.20:4000/v1", model = "gemma", tier = Tier.LAN))
-    provider(OpenAiCompatible("openrouter", "https://openrouter.ai/api/v1", model = "…", tier = Tier.CLOUD, apiKey = key))
+    provider(OpenAiCompatible("home-llama", "http://192.168.1.20:4000/v1", model = "gemma"), quality = 0.6)
+    provider(OpenAiCompatible("openrouter", "https://openrouter.ai/api/v1", model = "…", apiKey = key), quality = 0.9)
+    provider(GeminiNano(), quality = 0.3)
     order("home-llama", "openrouter")
     approve { request, provider -> previewSheet.ask(request.personalItems, provider) }
 }
@@ -24,7 +26,12 @@ when (val result = ai.generate(Request(listOf(user("Build a 30-minute session…
 }
 ```
 
-`ai.stream(request)` gives the same thing as a flow: `Started`, `Token`, `FellBack`, `Completed`.
+`ai.stream(request)` gives the same thing as a flow: `Started`, `Thinking`, `Token`, `FellBack`,
+`Upgrading`, `Completed`.
+
+A request can also say how providers are chosen and run: on-device or remote first, ranked by
+quality or speed, raced, hedged, a quick on-device draft replaced by a better remote answer, or
+the best of several. See [`docs/STRATEGIES.md`](docs/STRATEGIES.md).
 
 ## Modules
 
@@ -52,6 +59,7 @@ Contract tests against real endpoints are opt-in; see [`docs/CONTRACT_TESTS.md`]
 | Doc | What it answers |
 |---|---|
 | [`docs/DESIGN.md`](docs/DESIGN.md) | Prior art, routing rules, privacy, networks |
+| [`docs/STRATEGIES.md`](docs/STRATEGIES.md) | Which providers run, in what order, and how: modes, pinning, ranking, race, hedged, fast-then-best, best-of |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Modules, core types, policy, executor, networking, testing |
 | [`docs/ROADMAP.md`](docs/ROADMAP.md) | Milestones T1–T4 and what proves each |
 | [`docs/DECISIONS.md`](docs/DECISIONS.md) | What is settled and who settled it |

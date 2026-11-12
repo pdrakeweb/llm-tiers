@@ -12,8 +12,19 @@ val ai = TieredAi { network = monitor; /* providers */ }
 ```
 
 Each network attachment has its own id, so health recorded on one network is not carried to the
-next. Coming home makes the LAN provider eligible again without a restart. The library's manifest
+next. Coming home makes a home-network provider eligible again without a restart. The library's manifest
 declares `ACCESS_NETWORK_STATE`.
+
+## Remote providers
+
+Every remote endpoint is an `OpenAiCompatible`, whether it is a server on the home network, a
+self-hosted gateway or a cloud service. Two defaults follow the URL and can be overridden:
+
+- a plain-HTTP URL is taken to be a home server: no key is required, and it is **probed before
+  use** (`GET /models`, about one second), so a request made away from home moves on at once;
+- an HTTPS URL requires a key and is not probed: it is simply tried.
+
+Pass `probeBeforeUse = true` for any HTTPS endpoint of your own that is not always up.
 
 ## Plain HTTP to a home server
 
@@ -28,7 +39,7 @@ library enforce "private addresses only" on every connection:
 
 ```kotlin
 val lanClient = OkHttpClient.Builder().privateCleartextOnly().build()
-provider(OpenAiCompatible("home", "http://192.168.1.20:4000/v1", model = "…", tier = Tier.LAN, client = lanClient))
+provider(OpenAiCompatible("home", "http://192.168.1.20:4000/v1", model = "…", client = lanClient))
 ```
 
 `privateCleartextOnly()` checks the address OkHttp actually connected to, after DNS resolution and
@@ -38,7 +49,7 @@ proxy. Anything else fails with `CleartextNotAllowedException`, which the router
 `Unreachable`. HTTPS is unaffected. Use the same client for every provider so the rule cannot be
 skipped by accident.
 
-To keep LAN traffic off cellular, bind the client to Wi-Fi:
+To keep home-network traffic off cellular, bind the client to Wi-Fi:
 `OkHttpClient.Builder().socketFactory(monitor.wifiSocketFactory())`.
 
 ## Local network permission (Android 17, targetSdk 37+)
@@ -51,7 +62,7 @@ permission to reach addresses on the local network. Without it connections are d
 ```
 
 ```kotlin
-provider(OpenAiCompatible(/* LAN */).requiringLocalNetworkPermission(context))
+provider(OpenAiCompatible(/* a home-network address */).requiringLocalNetworkPermission(context))
 
 // In the settings screen where the user enters the home server:
 if (needsLocalNetworkPermission(context)) requestPermissions(arrayOf(ACCESS_LOCAL_NETWORK), 1)
@@ -135,7 +146,8 @@ from a home server will not download.
 
 `:sample` is a single screen: provider settings, a prompt box, and a log of where each request ran
 and why. `sample/journey/journey.sh` drives it on an emulator through nine steps (permission
-missing, LAN up, LAN gone, LAN silent, LAN back, pinning, cleartext rule, approval, offline) using
+missing, home server up, gone, silent and back, pinning, cleartext rule, approval, race, quality
+ranking, offline) using
 two fake endpoints on the development computer.
 
 ```bash

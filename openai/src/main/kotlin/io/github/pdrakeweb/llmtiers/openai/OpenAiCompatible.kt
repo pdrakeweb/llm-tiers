@@ -58,7 +58,11 @@ import kotlin.time.Duration.Companion.seconds
  * @param capabilities what this server and model can do; `/v1/models` does not report it reliably,
  *   so the app declares it.
  * @param requiresKey when true and [apiKey] is blank the provider fails with `KeyMissing` without
- *   touching the network.
+ *   touching the network. By default an HTTPS endpoint needs a key and a plain-HTTP one (a server
+ *   on the local network) does not.
+ * @param probeBeforeUse check `/models` (about one second) before sending a request. On by default
+ *   for plain-HTTP endpoints, which are home servers that are unreachable when the phone is away.
+ *   Turn it on for any self-hosted endpoint that is not always up.
  * @param client an OkHttp client to share connection pools with the app. Its event-listener
  *   factory is replaced for this provider's calls, and its interceptors still run: do not pass a
  *   client with a body-logging interceptor, or request and response content will be logged.
@@ -67,9 +71,9 @@ public class OpenAiCompatible(
     id: String,
     baseUrl: String,
     public val model: String,
-    override val tier: Tier,
     apiKey: String? = null,
-    private val requiresKey: Boolean = tier == Tier.CLOUD,
+    private val requiresKey: Boolean = baseUrl.startsWith("https://"),
+    override val probeBeforeUse: Boolean = baseUrl.startsWith("http://"),
     override val accepts: Set<Sensitivity> = setOf(Sensitivity.Public, Sensitivity.Personal),
     private val capabilities: Capabilities = Capabilities(),
     client: OkHttpClient = OkHttpClient(),
@@ -80,6 +84,7 @@ public class OpenAiCompatible(
     probeTimeout: Duration = 1.seconds,
 ) : Provider {
     override val id: ProviderId = ProviderId(id)
+    override val tier: Tier get() = Tier.REMOTE
 
     private val root = baseUrl.trimEnd('/')
     private val apiKey: String? = apiKey?.trim()

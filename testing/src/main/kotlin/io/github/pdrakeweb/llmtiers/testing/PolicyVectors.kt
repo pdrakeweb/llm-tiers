@@ -14,6 +14,7 @@ import io.github.pdrakeweb.llmtiers.NetworkState
 import io.github.pdrakeweb.llmtiers.ProviderHealth
 import io.github.pdrakeweb.llmtiers.ProviderId
 import io.github.pdrakeweb.llmtiers.ProviderInfo
+import io.github.pdrakeweb.llmtiers.Ranking
 import io.github.pdrakeweb.llmtiers.Request
 import io.github.pdrakeweb.llmtiers.Sensitivity
 import io.github.pdrakeweb.llmtiers.Tier
@@ -23,6 +24,7 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.boolean
+import kotlinx.serialization.json.double
 import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
@@ -110,6 +112,7 @@ public object PolicyVectors {
                 jsonSchema = o["jsonSchema"]?.jsonPrimitive?.boolean ?: false,
                 maxContext = o["maxContext"]?.jsonPrimitive?.int ?: 4096,
             ),
+            quality = o["quality"]?.jsonPrimitive?.double ?: 0.5,
         )
     }
 
@@ -124,6 +127,15 @@ public object PolicyVectors {
             Item("item-$i", Sensitivity.valueOf(s.jsonPrimitive.content))
         },
         mode = o["mode"]?.let { Mode.valueOf(it.jsonPrimitive.content) } ?: Mode.AppOrder,
+        rank = when (val r = o["rank"]) {
+            null -> Ranking.AppOrder
+            is JsonObject -> Ranking.Weighted(r.getValue("quality").jsonPrimitive.double, r.getValue("speed").jsonPrimitive.double)
+            else -> when (r.jsonPrimitive.content) {
+                "Quality" -> Ranking.Quality
+                "Speed" -> Ranking.Speed
+                else -> Ranking.AppOrder
+            }
+        },
         pin = o["pin"]?.jsonPrimitive?.content?.let(::ProviderId),
         budget = o["budgetFirstTokenMs"]?.jsonPrimitive?.int?.let { Budget(it.milliseconds) },
     )

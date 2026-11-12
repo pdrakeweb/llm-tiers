@@ -179,7 +179,7 @@ class LiteRtModelTest {
                 override fun close() = Unit
             },
         )
-        val cloud = FakeProvider("cloud", Tier.CLOUD)
+        val cloud = FakeProvider("cloud", Tier.REMOTE)
         val ai = TieredAi {
             provider(cloud)
             provider(nano)

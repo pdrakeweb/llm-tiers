@@ -22,10 +22,11 @@ import io.github.pdrakeweb.llmtiers.Mode
 import io.github.pdrakeweb.llmtiers.Outcome
 import io.github.pdrakeweb.llmtiers.ProviderId
 import io.github.pdrakeweb.llmtiers.ProviderInfo
+import io.github.pdrakeweb.llmtiers.Ranking
 import io.github.pdrakeweb.llmtiers.Request
 import io.github.pdrakeweb.llmtiers.Result
 import io.github.pdrakeweb.llmtiers.Sensitivity
-import io.github.pdrakeweb.llmtiers.Tier
+import io.github.pdrakeweb.llmtiers.Strategy
 import io.github.pdrakeweb.llmtiers.TieredAi
 import io.github.pdrakeweb.llmtiers.android.ACCESS_LOCAL_NETWORK
 import io.github.pdrakeweb.llmtiers.android.AndroidNetworkMonitor
@@ -91,6 +92,8 @@ class MainActivity : Activity() {
     private lateinit var order: EditText
     private lateinit var mode: Spinner
     private lateinit var pin: Spinner
+    private lateinit var strategy: Spinner
+    private lateinit var rank: Spinner
     private lateinit var prompt: EditText
     private lateinit var personal: EditText
     private lateinit var status: TextView
@@ -140,14 +143,16 @@ class MainActivity : Activity() {
             setOnClickListener { requestPermissions(arrayOf(ACCESS_LOCAL_NETWORK), 1) }
         }.also(column::addView)
 
-        lanUrl = field("lanUrl", "Home server URL (LAN), e.g. http://192.168.1.20:4000/v1")
-        lanModel = field("lanModel", "Home server model")
-        cloudUrl = field("cloudUrl", "Cloud URL", "https://openrouter.ai/api/v1")
+        lanUrl = field("lanUrl", "Your own server (any OpenAI-compatible URL), e.g. http://192.168.1.20:4000/v1")
+        lanModel = field("lanModel", "Your server's model")
+        cloudUrl = field("cloudUrl", "Cloud service URL (any OpenAI-compatible URL)", "https://openrouter.ai/api/v1")
         cloudModel = field("cloudModel", "Cloud model")
         cloudKey = field("cloudKey", "Cloud API key (kept in memory only)", secret = true)
         order = field("order", "Provider chain, in order (home, cloud, nano, local)", "home,cloud,nano,local")
         mode = spinner("mode", "Mode", Mode.entries.map { it.name })
         pin = spinner("pin", "Pin to one provider", listOf("(none)", "home", "cloud", "nano", "local"))
+        strategy = spinner("strategy", "How to run them", STRATEGIES.keys.toList())
+        rank = spinner("rank", "Order by (quality here: cloud 0.9, home 0.6, local 0.4, nano 0.3)", RANKINGS.keys.toList())
         prompt = field("prompt", "Prompt", "Say hello in five words.")
         personal = field("personal", "Personal note to send with it (asks before it leaves the device)")
         Button(this).apply {
@@ -315,20 +320,22 @@ class MainActivity : Activity() {
                 when (id) {
                     "home" -> if (config.lanUrl.isNotEmpty()) {
                         provider(
-                            OpenAiCompatible("home", config.lanUrl, config.lanModel, Tier.LAN, client = http)
-                                .requiringLocalNetworkPermission(this@MainActivity)
+                            OpenAiCompatible("home", config.lanUrl, config.lanModel, requiresKey = false, probeBeforeUse = true, client = http)
+                                .requiringLocalNetworkPermission(this@MainActivity),
+                            quality = 0.6,
                         )
                     }
                     "cloud" -> if (config.cloudUrl.isNotEmpty()) {
                         provider(
                             OpenAiCompatible(
-                                "cloud", config.cloudUrl, config.cloudModel, Tier.CLOUD,
-                                apiKey = config.cloudKey, requiresKey = config.cloudUrl.startsWith("https"), client = http,
-                            )
+                                "cloud", config.cloudUrl, config.cloudModel,
+                                apiKey = config.cloudKey, probeBeforeUse = false, client = http,
+                            ),
+                            quality = 0.9,
                         )
                     }
-                    "nano" -> provider(nano)
-                    "local" -> config.model?.let { provider(localProvider(it, config.gpu)) }
+                    "nano" -> provider(nano, quality = 0.3)
+                    "local" -> config.model?.let { provider(localProvider(it, config.gpu), quality = 0.4) }
                 }
             }
             network = monitor
@@ -357,6 +364,8 @@ class MainActivity : Activity() {
             messages = listOf(user(prompt.text.toString())),
             data = if (note.isEmpty()) emptyList() else listOf(Item(note, Sensitivity.Personal, "note")),
             mode = Mode.valueOf(mode.selectedItem as String),
+            strategy = STRATEGIES.getValue(strategy.selectedItem as String),
+            rank = RANKINGS.getValue(rank.selectedItem as String),
             pin = (pin.selectedItem as String).takeIf { it != "(none)" }?.let(::ProviderId),
             safeToRetry = true,
         )
@@ -367,7 +376,11 @@ class MainActivity : Activity() {
             ai.stream(request).collect { event ->
                 when (event) {
                     is Event.Started -> Unit
-                    is Event.Thinking -> answer.text = "Thinking…"
+                    is Event.Thinking -> if (tokenEvents == 0) answer.text = "Thinking…"
+                    is Event.Upgrading -> {
+                        answer.text = ""
+                        line("  better answer from ${event.to} replaced the quick one from ${event.from}")
+                    }
                     is Event.Token -> {
                         if (tokenEvents == 0) answer.text = "" // replaces "Thinking…"
                         tokenEvents++
@@ -432,11 +445,25 @@ class MainActivity : Activity() {
     private fun describe(outcome: Outcome): String = when (outcome) {
         Outcome.Succeeded -> "answered"
         Outcome.Escalated -> "escalated"
+        Outcome.Superseded -> "started, then not needed"
         is Outcome.Failed -> "failed: ${outcome.failure}"
         is Outcome.Skipped -> "skipped: ${outcome.reason.code}"
     }
 
     private companion object {
         const val TAG = "llmtiers-sample"
+        val STRATEGIES = linkedMapOf(
+            "Sequential" to Strategy.Sequential,
+            "Race" to Strategy.Race(),
+            "Hedged" to Strategy.Hedged(),
+            "FastThenBest" to Strategy.FastThenBest,
+            "BestOf" to Strategy.BestOf(),
+        )
+        val RANKINGS = linkedMapOf(
+            "AppOrder" to Ranking.AppOrder,
+            "Quality" to Ranking.Quality,
+            "Speed" to Ranking.Speed,
+            "Weighted" to Ranking.Weighted(),
+        )
     }
 }

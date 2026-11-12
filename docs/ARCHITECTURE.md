@@ -31,7 +31,8 @@ How the library is built. Behaviour is in `DESIGN.md`; keep the two in step.
 ```kotlin
 interface Provider {
     val id: ProviderId
-    val tier: Tier                                   // ON_DEVICE, LAN, CLOUD
+    val tier: Tier                                   // ON_DEVICE or REMOTE (D-033)
+    val probeBeforeUse: Boolean                      // run probe() before each request (D-033)
     val accepts: Set<Sensitivity>                    // which data it may receive
     suspend fun capabilities(): Capabilities         // text, vision, jsonSchema, maxContext
     suspend fun probe(): Reachability                // cheap health check
@@ -71,12 +72,23 @@ then `Completed(result)`.
 
 ## 3. Policy
 
+> **Tiers (D-033).** Earlier text in this document and in DESIGN.md speaks of three tiers:
+> on-device, LAN and cloud. There are now two, `ON_DEVICE` and `REMOTE`. A home server and a
+> cloud service differ only in per-provider properties (`probeBeforeUse`, the address rules in §6).
+> Modes are `AppOrder`, `PreferOnDevice`, `PreferRemote`, `OnlyOnDevice`, `OnlyRemote`.
+
 A pure function `plan(request, providers, health, network) -> Plan` with `Plan.steps` (ordered
 providers) and `Plan.skipped` (provider, reason). Order of rules: short-circuit (done by the
 executor before `plan`) → privacy → capability → user mode / pinning → health → budget. Documented
 by JSON test vectors in `:testing` so copies of the pattern can check themselves.
 
 ## 4. Executor
+
+A request's `strategy` chooses how the plan is run (ADR-0002, `docs/STRATEGIES.md`):
+`Sequential` (default), `Race`, `Hedged`, `FastThenBest`, `BestOf`. Its `rank` (`AppOrder`,
+`Quality`, `Speed`, `Weighted`) is part of the pure policy. What follows describes one attempt
+and the sequential path; the concurrent strategies run several such attempts side by side under
+the same rules.
 
 - Runs steps in order. Per attempt: first-token timeout and stall timeout, learned per provider as
   a high percentile of observed values (fixed defaults until 20 samples).
@@ -99,7 +111,7 @@ by JSON test vectors in `:testing` so copies of the pattern can check themselves
 - `Personal` items require `approve(request, provider)` to return true for that request and that
   provider; on-device providers never need approval.
 - A property test asserts: for random requests and provider sets, no unapproved `Personal` item and
-  no `Identifier` item reaches a LAN or cloud provider.
+  no `Identifier` item reaches a remote provider.
 - The library never logs request or response content; logs carry provider ids, timings and failure
   types only.
 
@@ -108,7 +120,7 @@ by JSON test vectors in `:testing` so copies of the pattern can check themselves
 - Plain HTTP only to loopback, link-local, RFC 1918, CGNAT or `.local` hosts, checked after DNS
   resolution; everything else must be HTTPS. A network-security-config snippet is documented for
   apps to include.
-- Optional binding to the Wi-Fi network for LAN providers so traffic never falls back to cellular.
+- Optional binding to the Wi-Fi network for home-network providers so traffic never falls back to cellular.
 - `needsLocalNetworkPermission()` and `LocalNetworkPermissionDenied` for targetSdk 37+.
 
 ## 7. Testing

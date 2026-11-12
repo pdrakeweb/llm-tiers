@@ -55,6 +55,7 @@ public class FakeProvider(
     override val tier: Tier,
     override val accepts: Set<Sensitivity> = setOf(Sensitivity.Public, Sensitivity.Personal),
     public var caps: Capabilities = Capabilities(),
+    override val probeBeforeUse: Boolean = tier == Tier.ON_DEVICE,
     default: Script.() -> Unit = { token("ok"); done() },
 ) : Provider {
     override val id: ProviderId = ProviderId(id)

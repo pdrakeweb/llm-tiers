@@ -57,12 +57,12 @@ class OpenAiCompatibleTest {
     fun stop() = server.close()
 
     private fun provider(
-        tier: Tier = Tier.LAN,
+        requiresKey: Boolean = false,
         apiKey: String? = null,
         baseUrl: String = server.baseUrl,
         capabilities: Capabilities = Capabilities(maxContext = 8192),
         client: OkHttpClient = OkHttpClient(),
-    ) = OpenAiCompatible("p", baseUrl, "test-model", tier, apiKey = apiKey, capabilities = capabilities, client = client)
+    ) = OpenAiCompatible("p", baseUrl, "test-model", apiKey = apiKey, requiresKey = requiresKey, capabilities = capabilities, client = client)
 
     private fun OpenAiCompatible.collect(request: PreparedRequest = hello): List<ProviderEvent> =
         runBlocking { withTimeout(15.seconds) { stream(request).toList() } }
@@ -321,8 +321,8 @@ class OpenAiCompatibleTest {
     }
 
     @Test
-    fun `a cloud provider without a key fails with KeyMissing and makes no request`() {
-        val p = provider(tier = Tier.CLOUD, apiKey = " ")
+    fun `a provider that needs a key and has none fails with KeyMissing and makes no request`() {
+        val p = provider(requiresKey = true, apiKey = " ")
         assertEquals(listOf<ProviderEvent>(ProviderEvent.Failed(ProviderFailure.KeyMissing)), p.collect())
         assertEquals(Reachability.Unreachable(ProviderFailure.KeyMissing), runBlocking { p.probe() })
         assertTrue(server.requests.isEmpty())
@@ -398,10 +398,10 @@ class OpenAiCompatibleTest {
     }
 
     @Test
-    fun `end to end - LAN server gone, the cloud endpoint answers, and the result says so`() {
+    fun `end to end - home server gone, the cloud endpoint answers, and the result says so`() {
         server.onChat = { it.sse(chunk("from "), chunk("cloud"), finish(), "[DONE]") }
-        val lan = OpenAiCompatible("home-llama", "http://127.0.0.1:${closedPort()}/v1", "m", Tier.LAN)
-        val cloud = OpenAiCompatible("openrouter", server.baseUrl, "m", Tier.CLOUD, apiKey = "k")
+        val lan = OpenAiCompatible("home-llama", "http://127.0.0.1:${closedPort()}/v1", "m")
+        val cloud = OpenAiCompatible("openrouter", server.baseUrl, "m", requiresKey = true, probeBeforeUse = false, apiKey = "k")
         val ai = TieredAi {
             provider(lan)
             provider(cloud)
