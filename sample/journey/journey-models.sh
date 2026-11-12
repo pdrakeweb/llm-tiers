@@ -73,7 +73,7 @@ launch --es modelSha "$SHA" --es modelAction download
 check "fake model downloaded and verified" wait_for "^MODEL Ready bytes=$SIZE" 40
 "$ADB" shell cmd connectivity airplane-mode enable; "$ADB" shell sleep 3
 "$ADB" shell am force-stop $PKG; "$ADB" logcat -c
-launch --es modelSha "$SHA" --es order local --ez autoSend true
+launch --es modelSha "$SHA" --es order local --ez autoSend true --ez warmUp false
 check "request ends with a RESULT" wait_for '^RESULT' 40
 logs | grep -E 'provider=local|^RESULT' | sed 's/^/      /'
 check "local provider reported ModelNotReady" bash -c "'$ADB' logcat -d -s llmtiers-sample:I | grep -q 'provider=local tier=ON_DEVICE outcome=ModelNotReady'"

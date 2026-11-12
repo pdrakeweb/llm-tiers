@@ -12,7 +12,15 @@ are never written to the repository, never printed, and never made a Gradle task
 | `LLM_TIERS_OPENROUTER_API_KEY` | OpenRouter key |
 | `LLM_TIERS_OPENROUTER_MODEL` | OpenRouter model id (for example a small, cheap one) |
 
-Run them (PowerShell):
+The easiest way to set them is a `.env` file in the repository root. Copy `.env.example` to
+`.env` and fill in what you have. `.env` is ignored by git, Gradle hands its values to the test
+process only, and a variable set in the real environment wins over the file.
+
+```bash
+./gradlew :openai:test --tests "*ContractTest*"
+```
+
+Or set them in the shell (PowerShell):
 
 ```powershell
 $env:LLM_TIERS_LAN_BASE_URL = "http://192.168.1.20:4000/v1"

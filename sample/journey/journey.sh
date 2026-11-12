@@ -44,7 +44,9 @@ step() {
   fi
 }
 
-common=(--es lanUrl "$HOME_URL" --es lanModel fake-model --es cloudUrl "$CLOUD_URL" --es cloudModel fake-model)
+# The downloaded-model tier has its own journeys; leaving it out keeps this one independent of
+# whether a model happens to be on the device.
+common=(--es lanUrl "$HOME_URL" --es lanModel fake-model --es cloudUrl "$CLOUD_URL" --es cloudModel fake-model --es order home,cloud,nano)
 
 "$ADB" shell pm revoke $PKG android.permission.ACCESS_LOCAL_NETWORK >/dev/null 2>&1
 step "1. Local-network permission not granted: home is skipped with the reason, cloud answers" \

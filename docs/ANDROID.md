@@ -82,10 +82,35 @@ For phones without Gemini Nano, an app can download an open model and run it on 
 
 ```kotlin
 val models = ModelManager(context)                       // :model-manager
-val spec = ModelSpec("gemma-text", url = "https://…/model.litertlm", sha256 = "…", sizeBytes = 1_234_567_890)
-val local = LiteRtModel("gemma-text") { (models.state(spec) as? ModelState.Ready)?.file }
+val spec = OpenModels.Gemma4E2B                          // or the user's pick, or your own ModelSpec
+val local = LiteRtModel("local", spec.contextTokens) { (models.state(spec) as? ModelState.Ready)?.file }
 provider(local)
 ```
+
+### Letting the user pick a model
+
+`OpenModels.all` is a starter catalog of openly licensed models, each pinned to an exact revision
+and SHA-256:
+
+| Entry | Download | Suits |
+|---|---|---|
+| `OpenModels.Qwen3Small` | 347 MB | Older phones, trying things out. Fast, modest answers |
+| `OpenModels.Gemma4E2B` | 2.6 GB | Current phones with 8 GB of memory or more. The balanced choice |
+| `OpenModels.Gemma4E4B` | 3.7 GB | Phones with 12 GB or more. The most capable |
+
+An app can list these, add its own `ModelSpec`s (any public HTTPS URL to a `.litertlm` file with
+its SHA-256 and size), or both. For each entry a picker can show:
+
+- `spec.displayName` and `spec.sizeBytes`, before anything is downloaded;
+- `models.fit(spec)`: `Ok`, `LowMemory` (the phone has less memory than twice the file size) or
+  `NotEnoughStorage`. It is advice to show, not a block: the user decides;
+- `models.state(spec)`: whether it is already on the device. Several models can be downloaded at
+  once and are managed independently.
+
+When the user switches model, build a new `LiteRtModel` for the new spec and `close()` the old
+one to free its memory. For the larger models on a phone with a capable GPU, pass
+`backend = LiteRtBackend.Gpu`; a model that cannot use it reports why in `lastLoadError`. The
+memory figures above are rough guidance, not measurements.
 
 - **Show the size first.** `spec.sizeBytes` is known before anything is fetched.
 - **Download.** `models.download(spec)` hands the job to Android's system `DownloadManager`, so it
@@ -127,4 +152,12 @@ not a real model gives `ModelNotReady` rather than a crash.
 
 ```bash
 bash sample/journey/journey-models.sh
+```
+
+`sample/journey/journey-real-model.sh` is the real thing and is opt-in because it downloads
+347 MB: it fetches the smallest catalog model from Hugging Face, verifies it, turns on airplane
+mode and has the model answer a prompt.
+
+```bash
+bash sample/journey/journey-real-model.sh
 ```

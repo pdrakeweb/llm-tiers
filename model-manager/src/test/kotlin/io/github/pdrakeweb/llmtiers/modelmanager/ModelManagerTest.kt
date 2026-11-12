@@ -62,7 +62,8 @@ class ModelManagerTest {
     private fun sha256(bytes: ByteArray) = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
 
     /** A new instance over the same disk and download service: what the app has after being killed. */
-    private fun manager() = ModelManager(dir, downloads, store, Dispatchers.Unconfined) { free }
+    private var memory = Long.MAX_VALUE
+    private fun manager() = ModelManager(dir, downloads, store, Dispatchers.Unconfined, freeSpace = { free }, totalMemory = { memory })
 
     @Test
     fun `Missing, then Downloading with progress, then Ready once the checksum matches`() = runBlocking<Unit> {
@@ -204,5 +205,66 @@ class ModelManagerTest {
         assertFailsWith<IllegalArgumentException> { ModelSpec("ok", "u", "abc", 1) }
         assertFailsWith<IllegalArgumentException> { ModelSpec("ok", "u", sha, 0) }
         ModelSpec("gemma-3n_E2B.q4", "u", sha.uppercase(), 1)
+    }
+
+    @Test
+    fun `the file keeps its URL's extension, because runtimes identify the model format by it`() {
+        val m = manager()
+        val sha = "a".repeat(64)
+        assertEquals("gemma-text.litertlm", m.file(spec).name)
+        assertEquals("a.litertlm", m.file(ModelSpec("a", "https://h/x/Model.LITERTLM?download=true#frag", sha, 1)).name)
+        assertEquals("b.task", m.file(ModelSpec("b", "https://h/model.task", sha, 1)).name)
+        assertEquals("c.model", m.file(ModelSpec("c", "https://h/download", sha, 1)).name, "no extension")
+        assertEquals("d.model", m.file(ModelSpec("d", "https://h/a.b/weird.ex-t", sha, 1)).name, "not a plain extension")
+    }
+
+    @Test
+    fun `fit advises on memory and storage for a model picker, and never blocks a model already downloaded`() = runBlocking<Unit> {
+        val m = manager()
+        assertEquals(ModelFit.Ok, m.fit(spec))
+
+        memory = spec.sizeBytes * 2 - 1
+        assertEquals(ModelFit.LowMemory, m.fit(spec), "less than twice the file size")
+        memory = spec.sizeBytes * 2
+        assertEquals(ModelFit.Ok, m.fit(spec))
+
+        free = spec.sizeBytes - 1
+        assertEquals(ModelFit.NotEnoughStorage, m.fit(spec))
+        free = Long.MAX_VALUE
+        m.download(spec)
+        downloads.complete(model)
+        m.state(spec)
+        free = 0
+        assertEquals(ModelFit.Ok, m.fit(spec), "it is already on the device")
+    }
+
+    @Test
+    fun `two models can be on the device at once and are managed independently`() = runBlocking<Unit> {
+        val other = ModelSpec("second", "https://example.test/second.litertlm", spec.sha256, spec.sizeBytes, displayName = "Second", contextTokens = 8192)
+        val m = manager()
+        m.download(spec)
+        downloads.complete(model)
+        assertIs<ModelState.Ready>(m.state(spec))
+        assertEquals(ModelState.Missing, m.state(other))
+
+        m.download(other)
+        downloads.complete(model)
+        assertIs<ModelState.Ready>(m.state(other))
+        m.delete(spec)
+        assertEquals(ModelState.Missing, m.state(spec))
+        assertIs<ModelState.Ready>(m.state(other), "deleting one leaves the other")
+    }
+
+    @Test
+    fun `the starter catalog is well formed - pinned revisions, distinct ids, smallest first`() {
+        val all = OpenModels.all
+        assertTrue(all.size >= 3)
+        assertEquals(all.size, all.map { it.id }.toSet().size)
+        assertEquals(all.sortedBy { it.sizeBytes }, all)
+        for (s in all) {
+            assertTrue(s.url.startsWith("https://"), s.id)
+            assertTrue(Regex("/resolve/[0-9a-f]{40}/").containsMatchIn(s.url), "${s.id} is pinned to an exact revision")
+            assertTrue(s.url.endsWith(".litertlm") && s.displayName != s.id && s.contextTokens >= 1024, s.id)
+        }
     }
 }

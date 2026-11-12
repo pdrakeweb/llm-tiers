@@ -1,5 +1,6 @@
 package io.github.pdrakeweb.llmtiers.modelmanager
 
+import android.app.ActivityManager
 import android.content.Context
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
@@ -22,7 +23,16 @@ import kotlin.time.Duration.Companion.milliseconds
  * @property sha256 the expected SHA-256 of the file, as hex.
  * @property sizeBytes the exact file size. Show it to the user before downloading.
  */
-public data class ModelSpec(val id: String, val url: String, val sha256: String, val sizeBytes: Long) {
+public data class ModelSpec(
+    val id: String,
+    val url: String,
+    val sha256: String,
+    val sizeBytes: Long,
+    /** Name to show in a model picker. */
+    val displayName: String = id,
+    /** The model's context length in tokens; pass it to the provider that runs the model. */
+    val contextTokens: Int = 4096,
+) {
     init {
         require(id.isNotEmpty() && id.all { it.isLetterOrDigit() || it in "._-" } && !id.startsWith('.')) { "id must be file-name safe" }
         require(sha256.length == 64 && sha256.all { it.isDigit() || it.lowercaseChar() in 'a'..'f' }) { "sha256 must be 64 hex characters" }
@@ -54,6 +64,20 @@ public sealed interface ModelState {
 
     /** [recoverable] is true when simply downloading again may succeed. */
     public data class Failed(val reason: FailureReason, val recoverable: Boolean) : ModelState
+}
+
+/** Whether a model is a sensible choice for this device. Advice for a picker, never a block. */
+public enum class ModelFit {
+    Ok,
+
+    /**
+     * The device has less memory than twice the model's file size. The model may load slowly, be
+     * killed by the system, or push other apps out of memory.
+     */
+    LowMemory,
+
+    /** Not enough free storage to download it. */
+    NotEnoughStorage,
 }
 
 internal enum class DownloadStatus { Pending, Running, Paused, Successful, Failed }
@@ -88,6 +112,7 @@ public class ModelManager internal constructor(
     private val store: KeyValues,
     private val io: CoroutineDispatcher,
     private val freeSpace: () -> Long = { directory.usableSpace },
+    private val totalMemory: () -> Long = { Long.MAX_VALUE },
 ) {
     /**
      * Models are kept in the app's own external files directory, which needs no storage
@@ -101,12 +126,38 @@ public class ModelManager internal constructor(
         downloads = SystemDownloads(context.applicationContext),
         store = PreferenceKeyValues(context.applicationContext),
         io = Dispatchers.IO,
+        totalMemory = {
+            ActivityManager.MemoryInfo()
+                .also { context.applicationContext.getSystemService(ActivityManager::class.java).getMemoryInfo(it) }
+                .totalMem
+        },
     )
 
     private val mutex = Mutex()
 
+    /**
+     * Whether [spec] suits this device, for a model picker: show the size, warn on [ModelFit.LowMemory],
+     * and let the user decide. A model that is already downloaded is never `NotEnoughStorage`.
+     */
+    public fun fit(spec: ModelSpec): ModelFit = when {
+        !file(spec).exists() && runCatching { directory.mkdirs(); freeSpace() }.getOrDefault(Long.MAX_VALUE) < spec.sizeBytes ->
+            ModelFit.NotEnoughStorage
+        totalMemory() < spec.sizeBytes * 2 -> ModelFit.LowMemory
+        else -> ModelFit.Ok
+    }
+
     /** Where the model is, or will be, stored. Use [state] to know whether it is ready. */
-    public fun file(spec: ModelSpec): File = File(directory, "${spec.id}.model")
+    public fun file(spec: ModelSpec): File = File(directory, spec.id + extension(spec.url))
+
+    /**
+     * The file keeps the extension of its URL (for example `.litertlm`): model runtimes tell
+     * formats apart by it and refuse a file whose extension they do not know.
+     */
+    private fun extension(url: String): String {
+        val name = url.substringBefore('?').substringBefore('#').substringAfterLast('/')
+        val ext = name.substringAfterLast('.', "")
+        return if (ext.isNotEmpty() && ext.length <= 12 && ext.all { it.isLetterOrDigit() }) ".${ext.lowercase()}" else ".model"
+    }
 
     /**
      * The model's current state. Cheap unless a download has just finished, in which case this

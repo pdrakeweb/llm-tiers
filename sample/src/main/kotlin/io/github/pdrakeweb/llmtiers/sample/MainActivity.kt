@@ -30,13 +30,16 @@ import io.github.pdrakeweb.llmtiers.TieredAi
 import io.github.pdrakeweb.llmtiers.android.ACCESS_LOCAL_NETWORK
 import io.github.pdrakeweb.llmtiers.android.AndroidNetworkMonitor
 import io.github.pdrakeweb.llmtiers.android.GeminiNano
+import io.github.pdrakeweb.llmtiers.android.LiteRtBackend
 import io.github.pdrakeweb.llmtiers.android.LiteRtModel
 import io.github.pdrakeweb.llmtiers.android.needsLocalNetworkPermission
 import io.github.pdrakeweb.llmtiers.android.privateCleartextOnly
 import io.github.pdrakeweb.llmtiers.android.requiringLocalNetworkPermission
+import io.github.pdrakeweb.llmtiers.modelmanager.ModelFit
 import io.github.pdrakeweb.llmtiers.modelmanager.ModelManager
 import io.github.pdrakeweb.llmtiers.modelmanager.ModelSpec
 import io.github.pdrakeweb.llmtiers.modelmanager.ModelState
+import io.github.pdrakeweb.llmtiers.modelmanager.OpenModels
 import io.github.pdrakeweb.llmtiers.openai.OpenAiCompatible
 import io.github.pdrakeweb.llmtiers.user
 import kotlinx.coroutines.CoroutineScope
@@ -53,7 +56,8 @@ import kotlin.coroutines.resume
  * A prompt box, the provider chain, and a log of where each request ran and why.
  *
  * Every field can also be set from launch extras (same names as [Config]'s properties, plus
- * `prompt`, `personal`, `autoApprove`, `autoSend` and `modelAction` = `download` or `delete`),
+ * `prompt`, `personal`, `autoApprove`, `autoSend`, `modelId`, `gpu`, `sendWhenLoaded` and
+ * `modelAction` = `download` or `delete`),
  * which is how the journey scripts drive it.
  * The cloud key is held in memory only.
  */
@@ -62,19 +66,22 @@ class MainActivity : Activity() {
         val lanUrl: String, val lanModel: String,
         val cloudUrl: String, val cloudModel: String, val cloudKey: String,
         val order: String,
+        val model: ModelSpec?, val gpu: Boolean,
     )
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private lateinit var monitor: AndroidNetworkMonitor
     private val nano = GeminiNano()
     private lateinit var models: ModelManager
-    private val local = LiteRtModel("local") { modelSpec()?.let { (models.state(it) as? ModelState.Ready)?.file } }
+    private var local: Triple<ModelSpec, Boolean, LiteRtModel>? = null
     private var watching: Job? = null
     private val http = OkHttpClient.Builder().privateCleartextOnly().build()
 
     private var built: Pair<Config, TieredAi>? = null
     private var running: Job? = null
     private var autoApprove = false
+    private var sentWhenLoaded = false
+    private var tokenEvents = 0
 
     private lateinit var lanUrl: EditText
     private lateinit var lanModel: EditText
@@ -94,6 +101,8 @@ class MainActivity : Activity() {
     private lateinit var modelSha: EditText
     private lateinit var modelSize: EditText
     private lateinit var modelStatus: TextView
+    private lateinit var modelPicker: Spinner
+    private lateinit var gpu: android.widget.CheckBox
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -148,8 +157,23 @@ class MainActivity : Activity() {
         }.also(column::addView)
         answer = TextView(this).apply { textSize = 16f; setTextIsSelectable(true) }.also(column::addView)
 
-        label("Downloaded on-device model (\"local\" in the chain)")
-        modelUrl = field("modelUrl", "Model file URL (.litertlm)")
+        // The picker: the library's starter catalog, or a model of the user's own.
+        val custom = intent.hasExtra("modelUrl")
+        modelPicker = spinner(
+            "model", "On-device model (\"local\" in the chain)",
+            OpenModels.all.map { "${it.displayName}, ${megabytes(it.sizeBytes)}" } + "Custom (enter below)",
+        )
+        if (custom) modelPicker.setSelection(OpenModels.all.size)
+        OpenModels.all.indexOfFirst { it.id == intent.getStringExtra("modelId") }.takeIf { it >= 0 }?.let(modelPicker::setSelection)
+        modelPicker.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: View?, position: Int, id: Long) = watchModel()
+            override fun onNothingSelected(parent: android.widget.AdapterView<*>?) = Unit
+        }
+        gpu = android.widget.CheckBox(this).apply {
+            text = "Run on the GPU (faster for the larger models on capable phones)"
+            isChecked = intent.getBooleanExtra("gpu", false)
+        }.also(column::addView)
+        modelUrl = field("modelUrl", "Custom model file URL (.litertlm, public HTTPS)")
         modelSha = field("modelSha", "SHA-256 of the file")
         modelSize = field("modelSize", "Size in bytes")
         modelStatus = TextView(this).also(column::addView)
@@ -195,7 +219,7 @@ class MainActivity : Activity() {
         scope.cancel()
         monitor.close()
         nano.close()
-        local.close()
+        local?.third?.close()
         super.onDestroy()
     }
 
@@ -209,9 +233,20 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun modelSpec(): ModelSpec? = runCatching {
+    private fun megabytes(bytes: Long) = if (bytes >= 1_000_000_000) "%.1f GB".format(bytes / 1e9) else "${bytes / 1_000_000} MB"
+
+    /** The model the user picked: one from the catalog, or their own. */
+    private fun modelSpec(): ModelSpec? = OpenModels.all.getOrNull(modelPicker.selectedItemPosition) ?: runCatching {
         ModelSpec("local", modelUrl.text.toString().trim(), modelSha.text.toString().trim(), modelSize.text.toString().trim().toLong())
     }.getOrNull()
+
+    /** One provider per chosen model and backend; switching closes the previous one and frees its memory. */
+    private fun localProvider(spec: ModelSpec, useGpu: Boolean): LiteRtModel {
+        local?.let { (s, g, provider) -> if (s == spec && g == useGpu) return provider else provider.close() }
+        return LiteRtModel("local", spec.contextTokens, if (useGpu) LiteRtBackend.Gpu else LiteRtBackend.Cpu) {
+            (models.state(spec) as? ModelState.Ready)?.file
+        }.also { local = Triple(spec, useGpu, it) }
+    }
 
     private fun modelAction(action: String) {
         val spec = modelSpec()
@@ -231,12 +266,17 @@ class MainActivity : Activity() {
         watching?.cancel()
         watching = scope.launch {
             models.observe(spec).collect { state ->
+                val advice = when (models.fit(spec)) {
+                    ModelFit.Ok -> ""
+                    ModelFit.LowMemory -> "\nThis phone has little memory for a model this size; it may be slow or get closed."
+                    ModelFit.NotEnoughStorage -> "\nNot enough free storage to download it."
+                }
                 modelStatus.text = when (state) {
-                    ModelState.Missing -> "Not downloaded (${spec.sizeBytes / 1_000_000} MB)"
-                    is ModelState.Downloading -> "Downloading ${state.bytesDownloaded / 1_000_000} of ${state.totalBytes / 1_000_000} MB"
+                    ModelState.Missing -> "Not downloaded (${megabytes(spec.sizeBytes)})"
+                    is ModelState.Downloading -> "Downloading ${megabytes(state.bytesDownloaded)} of ${megabytes(state.totalBytes)}"
                     is ModelState.Ready -> "Ready"
                     is ModelState.Failed -> "Failed: ${state.reason}" + if (state.recoverable) " (try again)" else ""
-                }
+                } + advice
                 // For the journey script: state names and byte counts only.
                 Log.i(TAG, "MODEL " + when (state) {
                     ModelState.Missing -> "Missing"
@@ -244,6 +284,18 @@ class MainActivity : Activity() {
                     is ModelState.Ready -> "Ready bytes=${state.file.length()}"
                     is ModelState.Failed -> "Failed reason=${state.reason} recoverable=${state.recoverable}"
                 })
+                // Load the model as soon as it is on the device, so the first request is not the one that waits.
+                if (state is ModelState.Ready && intent.getBooleanExtra("warmUp", true)) {
+                    val started = System.currentTimeMillis()
+                    val provider = localProvider(spec, gpu.isChecked)
+                    val ok = provider.warmUp()
+                    modelStatus.text = (if (ok) "Ready and loaded" else "Downloaded, but it could not be loaded on this device:\n${provider.lastLoadError}") + advice
+                    Log.i(TAG, "MODEL Loaded ok=$ok ms=${System.currentTimeMillis() - started}" + (provider.lastLoadError?.let { " error=$it" } ?: ""))
+                    if (ok && intent.getBooleanExtra("sendWhenLoaded", false) && !sentWhenLoaded) {
+                        sentWhenLoaded = true
+                        send()
+                    }
+                }
             }
         }
     }
@@ -252,6 +304,7 @@ class MainActivity : Activity() {
         lanUrl.text.toString().trim(), lanModel.text.toString().trim(),
         cloudUrl.text.toString().trim(), cloudModel.text.toString().trim(), cloudKey.text.toString().trim(),
         order.text.toString(),
+        modelSpec(), gpu.isChecked,
     )
 
     private fun ai(config: Config): TieredAi {
@@ -275,7 +328,7 @@ class MainActivity : Activity() {
                         )
                     }
                     "nano" -> provider(nano)
-                    "local" -> provider(local)
+                    "local" -> config.model?.let { provider(localProvider(it, config.gpu)) }
                 }
             }
             network = monitor
@@ -308,12 +361,16 @@ class MainActivity : Activity() {
             safeToRetry = true,
         )
         answer.text = ""
+        tokenEvents = 0
         val started = System.currentTimeMillis()
         running = scope.launch {
             ai.stream(request).collect { event ->
                 when (event) {
                     is Event.Started -> Unit
-                    is Event.Token -> answer.append(event.text)
+                    is Event.Token -> {
+                        tokenEvents++
+                        answer.append(event.text)
+                    }
                     is Event.FellBack -> {
                         if (event.discardPartial) answer.text = ""
                     }
@@ -350,7 +407,11 @@ class MainActivity : Activity() {
             }
         }
         // For the journey script. Provider ids, tiers, timings and failure types only.
-        Log.i(TAG, "RESULT ${result::class.simpleName} by=${(result as? Result.Answer)?.answeredBy} tookMs=$tookMs")
+        Log.i(
+            TAG,
+            "RESULT ${result::class.simpleName} by=${(result as? Result.Answer)?.answeredBy} tookMs=$tookMs" +
+                " tokenEvents=$tokenEvents chars=${(result as? Result.Answer)?.text?.length ?: 0}",
+        )
     }
 
     /** The log is newest-first, so a request's attempts are added as one block, in order. */

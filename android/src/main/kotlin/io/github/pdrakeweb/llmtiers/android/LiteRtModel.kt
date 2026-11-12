@@ -47,6 +47,15 @@ internal fun interface LocalModelLoader {
     fun load(file: File): LocalModel
 }
 
+/** Where LiteRT-LM runs the model. */
+public enum class LiteRtBackend {
+    /** Works on every supported device. */
+    Cpu,
+
+    /** Faster for larger models on phones with a capable GPU; a model that cannot use it fails to load. */
+    Gpu,
+}
+
 /**
  * A downloaded open model run on the device with LiteRT-LM. Nothing leaves the device.
  *
@@ -66,8 +75,12 @@ public class LiteRtModel internal constructor(
     private val loader: LocalModelLoader,
     private val dispatcher: CoroutineDispatcher,
 ) : Provider, AutoCloseable {
-    public constructor(id: String, maxContext: Int = 4096, modelFile: suspend () -> File?) :
-        this(id, modelFile, maxContext, LiteRtLoader(maxContext), Dispatchers.IO)
+    public constructor(
+        id: String,
+        maxContext: Int = 4096,
+        backend: LiteRtBackend = LiteRtBackend.Cpu,
+        modelFile: suspend () -> File?,
+    ) : this(id, modelFile, maxContext, LiteRtLoader(maxContext, backend), Dispatchers.IO)
 
     override val id: ProviderId = ProviderId(id)
     override val tier: Tier get() = Tier.ON_DEVICE
@@ -79,6 +92,14 @@ public class LiteRtModel internal constructor(
     private var loading: Pair<File, Deferred<LocalModel>>? = null
     private var loaded: LocalModel? = null
     private var closed = false
+
+    /**
+     * Why the model last failed to load (the engine's own message about the model file or the
+     * device), or null. For a settings screen; it never contains request or response content.
+     */
+    @Volatile
+    public var lastLoadError: String? = null
+        private set
 
     override suspend fun capabilities(): Capabilities = Capabilities(text = true, vision = false, jsonSchema = false, maxContext = maxContext)
 
@@ -96,6 +117,7 @@ public class LiteRtModel internal constructor(
             throw e
         } catch (e: Exception) {
             forget(file) // a failed load is not remembered; the next attempt starts afresh
+            lastLoadError = describe(e)
             false
         }
     }
@@ -118,6 +140,7 @@ public class LiteRtModel internal constructor(
             } catch (e: Exception) {
                 // Not a usable model (corrupt, wrong format, unsupported device).
                 forget(file)
+                lastLoadError = describe(e)
                 emit(ProviderEvent.Failed(ProviderFailure.ModelNotReady))
                 return@flow
             }
@@ -162,22 +185,33 @@ public class LiteRtModel internal constructor(
 
     /** The load runs in this provider's own scope, so a caller that stops waiting does not cancel it. */
     private fun model(file: File): Deferred<LocalModel> = synchronized(lock) {
-        loading?.let { (loaded, deferred) -> if (loaded == file) return deferred }
+        loading?.let { (current, deferred) -> if (current == file) return deferred }
+        // A different file (the app switched models): release the old one before loading the new.
+        loaded?.let { old -> runCatching { old.close() } }
+        loaded = null
         scope.async {
             val model = loader.load(file)
+            lastLoadError = null
             // A load cannot be interrupted; if the provider was closed meanwhile, release it now.
             synchronized(lock) { if (closed) runCatching { model.close() } else loaded = model }
             model
         }.also { loading = file to it }
     }
 
+    private fun describe(e: Exception) = (e::class.simpleName ?: "error") + (e.message?.let { ": " + it.take(300) } ?: "")
+
     private fun forget(file: File) = synchronized(lock) { if (loading?.first == file) loading = null }
 }
 
-/** LiteRT-LM on the CPU: works on every device the library supports. */
-internal class LiteRtLoader(private val maxContext: Int) : LocalModelLoader {
+internal class LiteRtLoader(private val maxContext: Int, private val backend: LiteRtBackend) : LocalModelLoader {
     override fun load(file: File): LocalModel {
-        val engine = Engine(EngineConfig(modelPath = file.absolutePath, backend = Backend.CPU(), maxNumTokens = maxContext))
+        val engine = Engine(
+            EngineConfig(
+                modelPath = file.absolutePath,
+                backend = if (backend == LiteRtBackend.Gpu) Backend.GPU() else Backend.CPU(),
+                maxNumTokens = maxContext,
+            )
+        )
         engine.initialize()
         return LiteRtLocalModel(engine)
     }
