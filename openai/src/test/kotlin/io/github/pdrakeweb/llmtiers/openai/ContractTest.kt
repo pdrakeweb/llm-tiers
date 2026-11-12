@@ -34,7 +34,23 @@ class ContractTest {
         val baseUrl = env("LLM_TIERS_LAN_BASE_URL")
         val model = env("LLM_TIERS_LAN_MODEL")
         assumeTrue(baseUrl != null && model != null, "set LLM_TIERS_LAN_BASE_URL and LLM_TIERS_LAN_MODEL to run")
-        streamsAnAnswer(OpenAiCompatible("lan", baseUrl!!, model!!, Tier.LAN, apiKey = env("LLM_TIERS_LAN_API_KEY"), maxTokens = 64))
+        streamsAnAnswer(OpenAiCompatible("lan", baseUrl!!, model!!, Tier.LAN, apiKey = env("LLM_TIERS_LAN_API_KEY"), maxTokens = 1024))
+    }
+
+    @Test
+    fun `LAN endpoint streams a longer answer in several chunks`() {
+        val baseUrl = env("LLM_TIERS_LAN_BASE_URL")
+        val model = env("LLM_TIERS_LAN_MODEL")
+        assumeTrue(baseUrl != null && model != null, "set LLM_TIERS_LAN_BASE_URL and LLM_TIERS_LAN_MODEL to run")
+        streamsALongerAnswer(OpenAiCompatible("lan", baseUrl!!, model!!, Tier.LAN, apiKey = env("LLM_TIERS_LAN_API_KEY"), maxTokens = 1024))
+    }
+
+    @Test
+    fun `OpenRouter streams a longer answer in several chunks`() {
+        val key = env("LLM_TIERS_OPENROUTER_API_KEY")
+        val model = env("LLM_TIERS_OPENROUTER_MODEL")
+        assumeTrue(key != null && model != null, "set LLM_TIERS_OPENROUTER_API_KEY and LLM_TIERS_OPENROUTER_MODEL to run")
+        streamsALongerAnswer(OpenAiCompatible("openrouter", "https://openrouter.ai/api/v1", model!!, Tier.CLOUD, apiKey = key, maxTokens = 1024))
     }
 
     @Test
@@ -42,7 +58,7 @@ class ContractTest {
         val key = env("LLM_TIERS_OPENROUTER_API_KEY")
         val model = env("LLM_TIERS_OPENROUTER_MODEL")
         assumeTrue(key != null && model != null, "set LLM_TIERS_OPENROUTER_API_KEY and LLM_TIERS_OPENROUTER_MODEL to run")
-        streamsAnAnswer(OpenAiCompatible("openrouter", "https://openrouter.ai/api/v1", model!!, Tier.CLOUD, apiKey = key, maxTokens = 64))
+        streamsAnAnswer(OpenAiCompatible("openrouter", "https://openrouter.ai/api/v1", model!!, Tier.CLOUD, apiKey = key, maxTokens = 1024))
     }
 
     @Test
@@ -73,6 +89,28 @@ class ContractTest {
             assertTrue(tokens >= 1 && result.text.isNotBlank(), "expected streamed tokens")
             val attempt = result.attempts.single()
             println("contract: ${provider.id} answered with $tokens token event(s), first token after ${attempt.firstTokenAfter}, total ${attempt.elapsed}")
+        }
+    }
+
+    /**
+     * A one-word reply can arrive as a single chunk, which proves an answer but not streaming. A
+     * longer reply must arrive in several chunks, spread over time. A reasoning model that streams
+     * only its reasoning for longer than the first-token timeout fails here with FirstTokenTimeout.
+     */
+    private fun streamsALongerAnswer(provider: OpenAiCompatible) = runBlocking {
+        withTimeout(180.seconds) {
+            val ai = TieredAi {
+                provider(provider)
+                timeouts = TimeoutConfig(firstToken = 60.seconds, stall = 30.seconds)
+            }
+            val longer = ai.stream(Request(listOf(user("Write the numbers from one to thirty as English words, separated by commas.")))).toList()
+            val longResult = (longer.last() as Event.Completed).result
+            assertIs<Result.Answer>(longResult, "result was $longResult")
+            val chunks = longer.count { it is Event.Token }
+            val run = longResult.attempts.single()
+            println("contract: ${provider.id} streamed a longer answer in $chunks token event(s), first token after ${run.firstTokenAfter}, total ${run.elapsed}")
+            assertTrue(chunks >= 5, "expected the longer answer in at least 5 chunks, got $chunks")
+            assertTrue(run.firstTokenAfter!! < run.elapsed, "the first token arrived before the answer finished")
         }
     }
 }
