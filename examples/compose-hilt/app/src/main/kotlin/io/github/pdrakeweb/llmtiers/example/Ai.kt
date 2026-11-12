@@ -13,6 +13,7 @@ import io.github.pdrakeweb.llmtiers.Logger
 import io.github.pdrakeweb.llmtiers.ProviderId
 import io.github.pdrakeweb.llmtiers.ProviderInfo
 import io.github.pdrakeweb.llmtiers.Request
+import io.github.pdrakeweb.llmtiers.Result
 import io.github.pdrakeweb.llmtiers.TieredAi
 import io.github.pdrakeweb.llmtiers.android.AndroidNetworkMonitor
 import io.github.pdrakeweb.llmtiers.android.GeminiNano
@@ -27,13 +28,18 @@ import io.github.pdrakeweb.llmtiers.openai.OpenAiCompatible
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.filterIsInstance
+import kotlinx.coroutines.flow.first
 import okhttp3.OkHttpClient
 import javax.inject.Inject
 import javax.inject.Singleton
 
-/** The one thing screens need from the library. A test replaces it with fakes. */
+/** The one thing screens need from the library. A test replaces it with fakes: `AiStreams(ai::stream)`. */
 fun interface AiStreams {
     fun stream(request: Request): Flow<Event>
+
+    /** For callers that want only the outcome, not the tokens as they arrive. */
+    suspend fun generate(request: Request): Result = stream(request).filterIsInstance<Event.Completed>().first().result
 }
 
 /**
@@ -51,7 +57,12 @@ class ApprovalBroker @Inject constructor() {
 
     val pending = MutableStateFlow<Pending?>(null)
 
-    suspend fun ask(items: List<Item>, provider: ProviderInfo): Boolean {
+    suspend fun ask(request: Request, provider: ProviderInfo): Boolean {
+        // A request with a hard deadline is an instant job: nobody can read a dialog in that
+        // time, and the deadline keeps running while the library waits here. Refuse at once, so
+        // the request stays on the device or ends cleanly. See docs/INTEGRATION.md step 5.
+        if (request.deadline != null) return false
+        val items = request.personalItems
         val reply = CompletableDeferred<Boolean>()
         val question = Pending(items.map { it.value }, provider.id.value, reply)
         pending.value = question
@@ -112,7 +123,7 @@ class AiGateway @Inject constructor(
         provider(nano, quality = 0.3)
 
         network = monitor
-        approve { request, provider -> approvals.ask(request.personalItems, provider) }
+        approve { request, provider -> approvals.ask(request, provider) }
         // Content-free by construction: provider ids, timings and failure types only.
         logger = Logger { Log.i("llm-tiers", "${it.event} ${it.provider} ${it.outcome} ${it.elapsedMillis}ms") }
     }

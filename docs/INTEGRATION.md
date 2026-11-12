@@ -82,7 +82,10 @@ dependencies {
 }
 ```
 
-`llm-tiers-android` brings the on-device runtimes with it and adds about 60 MB to a debug APK.
+`llm-tiers-android` brings both on-device runtimes with it and adds about 60 MB to a debug APK,
+even if the app only uses Gemini Nano. There is no lighter option today (D-024 in
+`DECISIONS.md`). An app that only uses remote endpoints can depend on `core` and `openai` alone
+and implement the small `NetworkMonitor` interface itself.
 
 ## Step 2 · Manifest
 
@@ -96,6 +99,8 @@ dependencies {
 <application android:usesCleartextTraffic="true" …>
 ```
 
+- You do not add `ACCESS_NETWORK_STATE`: `llm-tiers-android` declares it and the build merges it
+  into your manifest.
 - `usesCleartextTraffic="true"` is needed only for plain-HTTP home servers. With it, you **must**
   build your client with `privateCleartextOnly()` (step 3), which refuses plain HTTP to anything
   but a private or local address. If your app only uses HTTPS endpoints, leave the attribute out.
@@ -112,6 +117,7 @@ health and timings; a new instance per screen or per request throws that away.
 ```kotlin
 fun interface AiStreams {                       // what screens depend on; tests replace it
     fun stream(request: Request): Flow<Event>
+    suspend fun generate(request: Request): Result = stream(request).filterIsInstance<Event.Completed>().first().result
 }
 
 @Singleton
@@ -144,7 +150,7 @@ class AiGateway @Inject constructor(
         provider(nano, quality = 0.3)
 
         network = monitor
-        approve { request, provider -> approvals.ask(request.personalItems, provider) }
+        approve { request, provider -> approvals.ask(request, provider) }
         logger = Logger { Log.i("llm-tiers", "${it.event} ${it.provider} ${it.outcome} ${it.elapsedMillis}ms") }
     }
 }
@@ -170,6 +176,8 @@ Notes:
 - **`network = monitor`** is what makes airplane mode work: with no network, remote providers are
   skipped and on-device ones are tried. Without it the library assumes it is online.
 - **`GeminiNano()`** needs no setup. On phones without it, it reports "not ready" and is skipped.
+- **Changing settings** builds a new `TieredAi`, which starts with no learned health or timings.
+  That is intended: the old figures described the old endpoint.
 - Without Hilt: hold the same `AiGateway` in your `Application` class. The rule is one instance.
 
 ## Step 4 · Where the API key lives
@@ -206,7 +214,9 @@ class ApprovalBroker @Inject constructor() {
     }
     val pending = MutableStateFlow<Pending?>(null)
 
-    suspend fun ask(items: List<Item>, provider: ProviderInfo): Boolean {
+    suspend fun ask(request: Request, provider: ProviderInfo): Boolean {
+        if (request.deadline != null) return false     // an instant job: see "Deadlines and approval"
+        val items = request.personalItems
         val reply = CompletableDeferred<Boolean>()
         val question = Pending(items.map { it.value }, provider.id.value, reply)
         pending.value = question
@@ -233,6 +243,23 @@ approval?.let { question ->
 Show exactly `request.personalItems`: that is exactly what will be sent. If you configure no
 `approve` callback, personal data simply never goes to a remote provider. An unanswered question
 counts as "no" after two minutes.
+
+**Deadlines and approval.** A request's `deadline` covers everything, including the time the
+library spends waiting inside `approve`. A request with an 800 ms deadline and a `Personal` item
+would put up a dialog nobody can answer before the request ends as `NoVerdict`. For such instant
+jobs, do one of these:
+
+- send them with `mode = Mode.OnlyOnDevice`, so no approval is ever needed; or
+- have `approve` answer at once when `request.deadline != null`: `false` (as the example does),
+  or an answer the user already gave for the same data and provider.
+
+Never show an approval dialog for a request that has a deadline.
+
+**A refusal does not always mean `Blocked`.** `Blocked` is the result only when privacy excluded
+a provider and no provider was tried. If the user refuses a remote provider and an on-device one
+is configured, the request goes on to it without asking (data stays on the device), and the
+result is whatever that provider gives. The refused provider appears in `attempts` as
+`Skipped(ApprovalDenied)`.
 
 ## Step 6 · Making a request and showing every outcome
 
@@ -283,11 +310,78 @@ Rules for this code:
 - **Tell the user what to do.** `result.attempts` lists every provider tried or skipped and why.
   Map the failures a user can fix (`KeyMissing`, `AuthRejected`,
   `LocalNetworkPermissionDenied`, `Offline`) to a sentence; `ChatViewModel.advice` shows how.
-- If you do not need streaming: `val result = ai.generate(request)` (add it to your `AiStreams`
-  interface) returns the same `Result`.
+- If you do not need streaming: `ai.generate(request)` returns the same `Result`. The example's
+  `AiStreams` has it as a default method, so a test still builds one with `AiStreams(ai::stream)`.
+- **How `data` reaches the model.** The library folds the items a provider is allowed to see into
+  the last user message, ahead of your text. `Item(value, sensitivity, label)`: the optional
+  third argument is a label. For a prompt `"Summarise the note in one sentence."` and
+  `Item("Buy milk on Friday", Sensitivity.Personal, "note")` the model receives:
+
+  ```
+  Context:
+  - note: Buy milk on Friday
+
+  Summarise the note in one sentence.
+  ```
+
+  So write the prompt to refer to the item by its label. Without a label the line is `- <value>`.
+  `Identifier` items are dropped and never appear.
 
 To change how providers are chosen or run, set `mode`, `pin`, `rank` or `strategy` on the request.
-The table in [`STRATEGIES.md`](STRATEGIES.md) maps what you want to what to set.
+The table in [`STRATEGIES.md`](STRATEGIES.md) maps what you want to what to set. With nothing
+set, `mode` is `Mode.AppOrder` and `strategy` is `Strategy.Sequential`.
+
+### Reference: the types you will touch
+
+| Type | What it is |
+|---|---|
+| `ProviderId` | A provider's id. `result.answeredBy` and `attempt.provider` are this type; `.value` is the `String` you registered, and `toString()` prints it |
+| `Result.Answer` | `text`, `answeredBy: ProviderId`, `tier`, `attempts`, `discardPartial`, `incomplete: ProviderFailure?` |
+| `Attempt` | `provider`, `tier`, `outcome`, `why`, `elapsed`, `firstTokenAfter`, `usage` |
+| `Outcome` | `Succeeded`, `Failed(failure)`, `Escalated`, `Superseded`, `Skipped(reason)` |
+
+### Reference: every failure (`ProviderFailure`)
+
+| Failure | Meaning | Can the user fix it? |
+|---|---|---|
+| `Unreachable` | Could not connect; the request was not sent | Check the address or the network |
+| `Timeout` | Connected, no reply in time | No |
+| `FirstTokenTimeout` | No sign of life within the first-token timeout (10 s by default) | No |
+| `Stalled` | Started answering, then went quiet (5 s by default) | No |
+| `AuthRejected` | The key was refused | Yes: correct the key |
+| `KeyMissing` | A key is required and none is set | Yes: add a key |
+| `RateLimited` | The service asked us to slow down | Wait |
+| `ContextTooLong(max)` | The prompt is too long for this provider | Shorten it |
+| `Server(code)` | The service returned a 5xx error | No |
+| `ModelNotReady` | No on-device model is available or loaded | Download a model, if you offer that |
+| `Busy` | The on-device model is busy or over its quota | Wait |
+| `LocalNetworkPermissionDenied` | Android 17 permission for home-network addresses is missing | Yes: grant it |
+| `Other(detail)` | Anything else; `detail` is a type name or status code, never content | No |
+
+### Reference: every skip reason (`SkipReason`)
+
+A skipped provider was never sent anything. `reason.code` is a stable string for display.
+
+| Reason | Meaning |
+|---|---|
+| `SensitivityNotAccepted(sensitivity)` | The provider is configured not to accept that kind of data |
+| `ApprovalDenied` | The user (or your `approve`) said no, or did not answer in time |
+| `MissingCapability(capability)` | The request needs `vision`, `jsonSchema` or a longer `context` than it has |
+| `ExcludedByMode(mode)` | The request's mode rules it out, for example `OnlyOnDevice` |
+| `NotPinned` | The user pinned a different provider |
+| `CoolingDown` | It failed recently and is being rested (below). Tell the user to try again shortly |
+| `Offline` | There is no network and it is a remote provider |
+| `NotSafeToRetry` | An earlier provider may have acted on the request and it is not marked `safeToRetry` |
+| `CapabilitiesUnavailable` | The provider did not report what it can do in time |
+
+**Cooldown.** After a failure a provider is rested so later requests do not pay for it again.
+`Unreachable`, `ModelNotReady`, `AuthRejected`, `KeyMissing` and
+`LocalNetworkPermissionDenied` rest it for 30 seconds at once; `Busy` and `RateLimited` for 10
+seconds; three other failures within a minute, 30 seconds. A second request made inside that
+window sees `Skipped(CoolingDown)`, not the original failure, so map `CoolingDown` to a message
+of its own. After the user fixes something (a key, a permission), call
+`ai.health.reset(ProviderId("…"))` so the fix takes effect at once. A pinned provider is always
+tried, cooldown or not.
 
 ## Step 7 · The local-network permission (home servers only)
 
@@ -363,8 +457,20 @@ Script steps: `token("…")`, `tokens("a", "b")`, `done()`, `fail(failure)`, `th
 `escalate()`, `wait(duration)`, `hang()`, `crash()`. `provider.calls` and `provider.received` tell
 you what a provider was sent, which is how you assert that personal data did not leave.
 
+A request with a deadline, in virtual time (`ChatViewModelTest.kt`):
+
+```kotlin
+val slow = FakeProvider("nano", Tier.ON_DEVICE) { wait(2.seconds); token("too late"); done() }
+val ai = TieredAi { provider(slow); clock = SchedulerClock(testScheduler) }
+val result = AiStreams(ai::stream).generate(Request(listOf(user("title?")), deadline = 800.milliseconds))
+assertTrue(result is Result.NoVerdict)
+assertEquals(800, testScheduler.currentTime)
+```
+
 Write at least these tests for your integration: an answer is shown; a failure falls back; a
-refused approval sends nothing; each failure you map to advice produces that advice.
+refused approval sends nothing; each failure and skip reason you map to advice produces that
+advice, including `CoolingDown` on the request after a failure; and any request with a deadline
+ends at the deadline.
 
 ## Checklist before you call it done
 
@@ -373,6 +479,8 @@ refused approval sends nothing; each failure you map to advice produces that adv
 - [ ] Remote clients are built with `privateCleartextOnly()` if the manifest allows cleartext.
 - [ ] User data is in `Request.data` with a sensitivity, not pasted into the prompt.
 - [ ] `approve` shows `request.personalItems` and the provider, and "no" sends nothing.
+- [ ] No request with a `deadline` can put up an approval dialog.
+- [ ] `CoolingDown` has its own message; health is reset after the user fixes a key or permission.
 - [ ] All five results are handled by an exhaustive `when`; `incomplete` is shown.
 - [ ] On `Completed` the screen shows `result.text`; `discardPartial` and `Upgrading` clear it.
 - [ ] No prompt, answer or item value is logged; no body-logging HTTP interceptor.

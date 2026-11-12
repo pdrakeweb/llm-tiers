@@ -62,6 +62,8 @@ The library enforces them. These are the ways an integration defeats them anyway
 | Appending tokens and ignoring `Completed` | Shows discarded drafts and misses `incomplete` | On `Completed`, show `result.text`; clear on `discardPartial` and `Upgrading` |
 | "Only this provider" done by reordering | It can still fall back to another | `pin = ProviderId("…")` |
 | Leaving `safeToRetry` false for plain text generation | No fallback after a timeout, no concurrent strategies | `safeToRetry = true` unless running twice would do harm |
+| An approval dialog for a request that has a `deadline` | The deadline runs while the dialog is up; nobody can answer in time | `Mode.OnlyOnDevice` for instant jobs, or answer in `approve` without a dialog |
+| Treating a skipped provider like a failed one | The request after a failure sees `Skipped(CoolingDown)`, and the user gets a useless message | Give `CoolingDown` its own message; `ai.health.reset(id)` after the user fixes something |
 | Asking for the local-network permission at startup | Users refuse prompts with no context | Ask on the screen where they enter a home server |
 
 ## The API in one screen

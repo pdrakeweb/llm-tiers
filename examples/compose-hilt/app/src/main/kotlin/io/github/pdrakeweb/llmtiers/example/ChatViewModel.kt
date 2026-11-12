@@ -100,7 +100,12 @@ class ChatViewModel @Inject constructor(private val ai: AiStreams) : ViewModel()
             ProviderFailure.RateLimited -> "The service is busy. Try again in a moment."
             else -> null
         }
-        is Outcome.Skipped -> if (outcome.reason == SkipReason.Offline) "You are offline and no on-device model is ready." else null
+        is Outcome.Skipped -> when (outcome.reason) {
+            SkipReason.Offline -> "You are offline and no on-device model is ready."
+            // A provider that just failed is rested for a short while before it is tried again.
+            SkipReason.CoolingDown -> "The AI service had a problem a moment ago. Try again shortly."
+            else -> null
+        }
         else -> null
     }
 

@@ -1,10 +1,15 @@
 package io.github.pdrakeweb.llmtiers.example
 
 import io.github.pdrakeweb.llmtiers.ProviderFailure
+import io.github.pdrakeweb.llmtiers.Request
+import io.github.pdrakeweb.llmtiers.Result
 import io.github.pdrakeweb.llmtiers.Tier
 import io.github.pdrakeweb.llmtiers.TieredAi
 import io.github.pdrakeweb.llmtiers.testing.FakeProvider
 import io.github.pdrakeweb.llmtiers.testing.SchedulerClock
+import io.github.pdrakeweb.llmtiers.user
+import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.Duration.Companion.seconds
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.StandardTestDispatcher
@@ -66,6 +71,28 @@ class ChatViewModelTest {
         vm.send("hi")
         advanceUntilIdle()
         assertEquals("Add an API key in settings.", vm.state.value.status)
+    }
+
+    @Test
+    fun `an instant job gives up at its deadline instead of waiting for a slow provider`() = runTest(dispatcher) {
+        val slow = FakeProvider("nano", Tier.ON_DEVICE) { wait(2.seconds); token("too late"); done() }
+        val ai = TieredAi {
+            provider(slow)
+            clock = SchedulerClock(testScheduler)
+        }
+        val result = AiStreams(ai::stream).generate(Request(listOf(user("title?")), deadline = 800.milliseconds))
+        assertTrue(result is Result.NoVerdict)
+        assertEquals(800, testScheduler.currentTime)
+    }
+
+    @Test
+    fun `a provider that just failed is rested, and the user is told to try again shortly`() = runTest(dispatcher) {
+        val vm = viewModel(FakeProvider("remote", Tier.REMOTE) { fail(ProviderFailure.Unreachable) })
+        vm.send("first")
+        advanceUntilIdle()
+        vm.send("second")
+        advanceUntilIdle()
+        assertEquals("The AI service had a problem a moment ago. Try again shortly.", vm.state.value.status)
     }
 
     @Test
