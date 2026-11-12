@@ -13,7 +13,9 @@ How the library is built. Behaviour is in `DESIGN.md`; keep the two in step.
                  OpenRouter, LiteLLM, llama.cpp server, Ollama, vLLM.
 :android         NetworkMonitor (keys health by Network handle), private-address and cleartext
                  rules, local-network permission helper (targetSdk 37+), Gemini Nano provider
-                 (ML Kit GenAI Prompt API), LiteRT-LM provider, encrypted key store.
+                 (ML Kit GenAI Prompt API), encrypted key store.
+:litert          Optional: LiteRT-LM provider for downloaded models. Its own module because the
+                 native runtime is about 23 MB per ABI (D-024).
 :model-manager   Download / verify (SHA-256) / delete on-device models through the system
                  DownloadManager; state machine Missing → Downloading → Ready | Failed(recoverable).
 :firebase        Optional: Firebase AI Logic (Gemini cloud and its hybrid mode) as providers.

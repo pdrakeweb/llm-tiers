@@ -40,7 +40,8 @@ the best of several. See [`docs/STRATEGIES.md`](docs/STRATEGIES.md).
 | `:core` | Pure Kotlin. Request and result types, the routing policy (`plan()`, a pure function), health tracking, and the executor: timeouts, fallback, escalation, pinning, retry safety. No Android or network types (build guard) |
 | `:openai` | Streaming client for any OpenAI-compatible server (OpenRouter, LiteLLM, llama.cpp, Ollama, vLLM) over OkHttp |
 | `:model-manager` | Download, SHA-256 verify and delete on-device models through Android's system DownloadManager |
-| `:android` | Network monitor, private-address rule for plain HTTP, local-network permission helper, Gemini Nano provider, LiteRT-LM provider. See [`docs/ANDROID.md`](docs/ANDROID.md) |
+| `:litert` | Optional: runs a downloaded open model on the device with LiteRT-LM. Separate because its native runtime is about 23 MB per ABI |
+| `:android` | Network monitor, private-address rule for plain HTTP, local-network permission helper, Gemini Nano provider. See [`docs/ANDROID.md`](docs/ANDROID.md) |
 | `:sample` | A one-screen app: provider settings, a prompt box, and a log of where each request ran and why |
 | `:testing` | Fake providers with scripted latency and failures, fake clocks, a scripted network monitor, and the policy vectors as JSON |
 

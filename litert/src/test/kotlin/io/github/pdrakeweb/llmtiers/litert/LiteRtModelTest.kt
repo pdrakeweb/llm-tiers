@@ -1,4 +1,4 @@
-package io.github.pdrakeweb.llmtiers.android
+package io.github.pdrakeweb.llmtiers.litert
 
 import io.github.pdrakeweb.llmtiers.NetworkMonitor
 import io.github.pdrakeweb.llmtiers.NetworkState
@@ -21,8 +21,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -169,16 +169,7 @@ class LiteRtModelTest {
         val offline = object : NetworkMonitor {
             override val state = MutableStateFlow(NetworkState.Offline)
         }
-        val nano = GeminiNano(
-            "gemini-nano",
-            object : NanoEngine {
-                override suspend fun status() = NanoStatus.Unavailable
-                override suspend fun tokenLimit() = 0
-                override fun generate(prompt: String, image: ByteArray?): Flow<String> = error("must not be called")
-                override fun download(): Flow<Long> = flow { }
-                override fun close() = Unit
-            },
-        )
+        val nano = FakeProvider("gemini-nano", Tier.ON_DEVICE).apply { probeUnreachable(ProviderFailure.ModelNotReady) }
         val cloud = FakeProvider("cloud", Tier.REMOTE)
         val ai = TieredAi {
             provider(cloud)

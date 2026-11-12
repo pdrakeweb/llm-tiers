@@ -32,7 +32,6 @@ dependencies {
     api(project(":core"))
     api(libs.okhttp)
     implementation(libs.mlkit.genai.prompt)
-    implementation(libs.litertlm)
 
     testImplementation(project(":testing"))
     testImplementation(libs.kotlin.test)

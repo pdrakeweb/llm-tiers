@@ -31,8 +31,8 @@ import io.github.pdrakeweb.llmtiers.TieredAi
 import io.github.pdrakeweb.llmtiers.android.ACCESS_LOCAL_NETWORK
 import io.github.pdrakeweb.llmtiers.android.AndroidNetworkMonitor
 import io.github.pdrakeweb.llmtiers.android.GeminiNano
-import io.github.pdrakeweb.llmtiers.android.LiteRtBackend
-import io.github.pdrakeweb.llmtiers.android.LiteRtModel
+import io.github.pdrakeweb.llmtiers.litert.LiteRtBackend
+import io.github.pdrakeweb.llmtiers.litert.LiteRtModel
 import io.github.pdrakeweb.llmtiers.android.needsLocalNetworkPermission
 import io.github.pdrakeweb.llmtiers.android.privateCleartextOnly
 import io.github.pdrakeweb.llmtiers.android.requiringLocalNetworkPermission

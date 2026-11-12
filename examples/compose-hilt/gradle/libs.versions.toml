@@ -16,6 +16,7 @@ junit4 = "4.13.2"
 llmtiers-core = { module = "io.github.pdrakeweb:llm-tiers-core", version.ref = "llmTiers" }
 llmtiers-openai = { module = "io.github.pdrakeweb:llm-tiers-openai", version.ref = "llmTiers" }
 llmtiers-android = { module = "io.github.pdrakeweb:llm-tiers-android", version.ref = "llmTiers" }
+llmtiers-litert = { module = "io.github.pdrakeweb:llm-tiers-litert", version.ref = "llmTiers" }
 llmtiers-modelmanager = { module = "io.github.pdrakeweb:llm-tiers-model-manager", version.ref = "llmTiers" }
 llmtiers-testing = { module = "io.github.pdrakeweb:llm-tiers-testing", version.ref = "llmTiers" }
 compose-bom = { module = "androidx.compose:compose-bom", version.ref = "composeBom" }

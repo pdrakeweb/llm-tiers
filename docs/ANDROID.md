@@ -90,6 +90,9 @@ JSON-schema output, so requests that need more are routed past it.
 ## Downloaded models (LiteRT-LM)
 
 For phones without Gemini Nano, an app can download an open model and run it on the device.
+`LiteRtModel` is in its own module, `llm-tiers-litert` (package `….llmtiers.litert`), because it
+bundles the LiteRT-LM native runtime: 22.7 MB per phone (`arm64-v8a`), plus 26.9 MB for emulators
+(`x86_64`) unless the release build filters it out. `docs/INTEGRATION.md` step 1 shows how.
 
 ```kotlin
 val models = ModelManager(context)                       // :model-manager

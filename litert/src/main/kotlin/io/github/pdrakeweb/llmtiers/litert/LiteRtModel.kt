@@ -1,4 +1,4 @@
-package io.github.pdrakeweb.llmtiers.android
+package io.github.pdrakeweb.llmtiers.litert
 
 import com.google.ai.edge.litertlm.Backend
 import com.google.ai.edge.litertlm.Content

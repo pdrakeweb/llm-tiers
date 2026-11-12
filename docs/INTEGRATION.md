@@ -72,7 +72,8 @@ dependencyResolutionManagement {
 dependencies {
     implementation("io.github.pdrakeweb:llm-tiers-core:0.1.0-SNAPSHOT")           // always
     implementation("io.github.pdrakeweb:llm-tiers-openai:0.1.0-SNAPSHOT")         // remote endpoints
-    implementation("io.github.pdrakeweb:llm-tiers-android:0.1.0-SNAPSHOT")        // network monitor, Nano, downloaded models
+    implementation("io.github.pdrakeweb:llm-tiers-android:0.1.0-SNAPSHOT")        // network monitor, Gemini Nano
+    implementation("io.github.pdrakeweb:llm-tiers-litert:0.1.0-SNAPSHOT")         // only if users run downloaded models (large, see below)
     implementation("io.github.pdrakeweb:llm-tiers-model-manager:0.1.0-SNAPSHOT")  // only if users download models
     implementation("com.squareup.okhttp3:okhttp:5.5.1")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0")
@@ -82,10 +83,27 @@ dependencies {
 }
 ```
 
-`llm-tiers-android` brings both on-device runtimes with it and adds about 60 MB to a debug APK,
-even if the app only uses Gemini Nano. There is no lighter option today (D-024 in
-`DECISIONS.md`). An app that only uses remote endpoints can depend on `core` and `openai` alone
-and implement the small `NetworkMonitor` interface itself.
+**Size.** `llm-tiers-litert` is the only large piece, and it is optional. It carries Google's
+LiteRT-LM runtime, one native library per processor type (an ABI, "application binary
+interface"): 22.7 MB for `arm64-v8a` (every current phone) and 26.9 MB for `x86_64` (emulators
+and a few Chromebooks). An app that leaves it out pays nothing; Gemini Nano needs no bundled
+runtime because the model and its engine live in the phone's system software.
+
+If you do include it, do not ship both copies to phones:
+
+- Publishing an Android App Bundle (`.aab`, the format Google Play requires) splits by ABI for
+  you: a phone downloads only its own copy, about 10 MB compressed, 22.7 MB installed.
+- For an APK you hand out yourself, keep the emulator copy out of release builds:
+
+  ```kotlin
+  android { buildTypes { release { ndk { abiFilters += "arm64-v8a" } } } }
+  ```
+
+  Measured on `examples/compose-hilt` (release, not minified): 62 MB with both copies, 35 MB
+  with the filter, and about 13 MB of that is everything other than the runtime.
+
+An app that only uses remote endpoints can depend on `core` and `openai` alone and implement the
+small `NetworkMonitor` interface itself.
 
 ## Step 2 · Manifest
 
@@ -418,7 +436,9 @@ health after the user answers, or the library keeps skipping it for the rest of 
 
 ## Step 8 · Downloaded on-device models (optional)
 
-For phones without Gemini Nano. `OpenModels.all` is a starter catalog; show `displayName` and
+For phones without Gemini Nano. Needs `llm-tiers-litert` (the provider, package
+`io.github.pdrakeweb.llmtiers.litert`) and `llm-tiers-model-manager` (the downloads); see the
+size note in step 1. `OpenModels.all` is a starter catalog; show `displayName` and
 `sizeBytes`, show `models.fit(spec)` as advice, and let the user choose.
 
 ```kotlin

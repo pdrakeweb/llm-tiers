@@ -17,7 +17,7 @@ are relative to that checkout.
 ## Do these, in this order
 
 1. **Publish the library locally.** In the checkout: `./gradlew publishToMavenLocal`. This puts
-   `io.github.pdrakeweb:llm-tiers-{core,openai,android,model-manager,testing}:0.1.0-SNAPSHOT` in
+   `io.github.pdrakeweb:llm-tiers-{core,openai,android,litert,model-manager,testing}:0.1.0-SNAPSHOT` in
    the local Maven cache. It needs JDK 17+ and the Android SDK (platform 37, build tools 36).
 2. **Read `docs/INTEGRATION.md` and follow its nine steps.** It is ordered, and every code block
    comes from a working app.
@@ -64,6 +64,7 @@ The library enforces them. These are the ways an integration defeats them anyway
 | Leaving `safeToRetry` false for plain text generation | No fallback after a timeout, no concurrent strategies | `safeToRetry = true` unless running twice would do harm |
 | An approval dialog for a request that has a `deadline` | The deadline runs while the dialog is up; nobody can answer in time | `Mode.OnlyOnDevice` for instant jobs, or answer in `approve` without a dialog |
 | Treating a skipped provider like a failed one | The request after a failure sees `Skipped(CoolingDown)`, and the user gets a useless message | Give `CoolingDown` its own message; `ai.health.reset(id)` after the user fixes something |
+| Adding `llm-tiers-litert` to an app that does not run downloaded models, or shipping its emulator library to phones | 23 MB per ABI of native code, about 50 MB in an unfiltered APK | Leave the module out; if it is needed, ship an App Bundle or set `abiFilters` for release (guide, step 1) |
 | Asking for the local-network permission at startup | Users refuse prompts with no context | Ask on the screen where they enter a home server |
 
 ## The API in one screen
@@ -100,8 +101,9 @@ when (val result = ai.generate(request)) {
 ```
 
 Packages: `io.github.pdrakeweb.llmtiers` (core), `.openai` (`OpenAiCompatible`), `.android`
-(`AndroidNetworkMonitor`, `GeminiNano`, `LiteRtModel`, `privateCleartextOnly`,
+(`AndroidNetworkMonitor`, `GeminiNano`, `privateCleartextOnly`,
 `requiringLocalNetworkPermission`, `needsLocalNetworkPermission`, `ACCESS_LOCAL_NETWORK`),
+`.litert` (`LiteRtModel`, `LiteRtBackend`),
 `.modelmanager` (`ModelManager`, `ModelSpec`, `ModelState`, `ModelFit`, `OpenModels`), `.testing`
 (`FakeProvider`, its `Script`, `SchedulerClock`, `ScriptedNetworkMonitor`).
 

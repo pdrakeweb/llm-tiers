@@ -17,7 +17,7 @@ import io.github.pdrakeweb.llmtiers.Result
 import io.github.pdrakeweb.llmtiers.TieredAi
 import io.github.pdrakeweb.llmtiers.android.AndroidNetworkMonitor
 import io.github.pdrakeweb.llmtiers.android.GeminiNano
-import io.github.pdrakeweb.llmtiers.android.LiteRtModel
+import io.github.pdrakeweb.llmtiers.litert.LiteRtModel
 import io.github.pdrakeweb.llmtiers.android.privateCleartextOnly
 import io.github.pdrakeweb.llmtiers.android.requiringLocalNetworkPermission
 import io.github.pdrakeweb.llmtiers.modelmanager.ModelManager
