@@ -57,12 +57,12 @@ class ChatViewModelTest {
     fun `falls back and says what happened`() = runTest(dispatcher) {
         val vm = viewModel(
             FakeProvider("remote", Tier.REMOTE) { fail(ProviderFailure.RateLimited) },
-            FakeProvider("nano", Tier.ON_DEVICE) { token("from the device"); done() },
+            FakeProvider("gemini-nano", Tier.ON_DEVICE) { token("from the device"); done() },
         )
         vm.send("hi")
         advanceUntilIdle()
         assertEquals("from the device", vm.state.value.answer)
-        assertEquals(listOf("remote: is rate limited", "nano: answered (first word after 0 ms)"), vm.state.value.trail)
+        assertEquals(listOf("remote: is rate limited", "gemini-nano: answered (first word after 0 ms)"), vm.state.value.trail)
     }
 
     @Test
@@ -75,7 +75,7 @@ class ChatViewModelTest {
 
     @Test
     fun `an instant job gives up at its deadline instead of waiting for a slow provider`() = runTest(dispatcher) {
-        val slow = FakeProvider("nano", Tier.ON_DEVICE) { wait(2.seconds); token("too late"); done() }
+        val slow = FakeProvider("gemini-nano", Tier.ON_DEVICE) { wait(2.seconds); token("too late"); done() }
         val ai = TieredAi {
             provider(slow)
             clock = SchedulerClock(testScheduler)

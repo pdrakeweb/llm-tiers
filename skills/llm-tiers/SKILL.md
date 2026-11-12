@@ -103,7 +103,9 @@ Packages: `io.github.pdrakeweb.llmtiers` (core), `.openai` (`OpenAiCompatible`),
 (`AndroidNetworkMonitor`, `GeminiNano`, `LiteRtModel`, `privateCleartextOnly`,
 `requiringLocalNetworkPermission`, `needsLocalNetworkPermission`, `ACCESS_LOCAL_NETWORK`),
 `.modelmanager` (`ModelManager`, `ModelSpec`, `ModelState`, `ModelFit`, `OpenModels`), `.testing`
-(`FakeProvider`, `SchedulerClock`, `ScriptedNetworkMonitor`).
+(`FakeProvider`, its `Script`, `SchedulerClock`, `ScriptedNetworkMonitor`).
+
+Default provider ids: `GeminiNano()` is `gemini-nano`; the others take the id you give them.
 
 ## If something is not covered
 

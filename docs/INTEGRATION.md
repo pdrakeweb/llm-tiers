@@ -175,7 +175,10 @@ Notes:
   quality ranking, `FastThenBest` or `BestOf` (step 6).
 - **`network = monitor`** is what makes airplane mode work: with no network, remote providers are
   skipped and on-device ones are tried. Without it the library assumes it is online.
-- **`GeminiNano()`** needs no setup. On phones without it, it reports "not ready" and is skipped.
+- **`GeminiNano()`** needs no setup. Its provider id is `gemini-nano` unless you pass another
+  (`GeminiNano("nano")`); that id is what `answeredBy` and `attempts` show. On phones without
+  it, it reports "not ready" and is skipped. `OpenAiCompatible` and `LiteRtModel` take their id
+  as the first argument.
 - **Changing settings** builds a new `TieredAi`, which starts with no learned health or timings.
   That is intended: the old figures described the old endpoint.
 - Without Hilt: hold the same `AiGateway` in your `Application` class. The rule is one instance.
@@ -259,7 +262,9 @@ Never show an approval dialog for a request that has a deadline.
 a provider and no provider was tried. If the user refuses a remote provider and an on-device one
 is configured, the request goes on to it without asking (data stays on the device), and the
 result is whatever that provider gives. The refused provider appears in `attempts` as
-`Skipped(ApprovalDenied)`.
+`Skipped(ApprovalDenied)`. A provider that is skipped (for example `CoolingDown`, because an
+earlier request found no model on the device) does not count as tried, so the same refusal can
+give `NoneAvailable` on one request and `Blocked` on the next. Treat both as "nothing was sent".
 
 ## Step 6 · Making a request and showing every outcome
 
@@ -268,7 +273,9 @@ result is whatever that provider gives. The refused provider appears in `attempt
 ```kotlin
 val request = Request(
     messages = listOf(user(prompt)),
-    data = listOf(Item(note, Sensitivity.Personal, "note")),   // data the user may not want to leave the device
+    // Data the user may not want to leave the device. Leave the list empty when there is none:
+    // a blank Personal item still counts as personal data and would raise the approval dialog.
+    data = if (note.isBlank()) emptyList() else listOf(Item(note, Sensitivity.Personal, "note")),
     safeToRetry = true,   // generating text has no side effects; see below
 )
 job = viewModelScope.launch {
@@ -335,9 +342,15 @@ set, `mode` is `Mode.AppOrder` and `strategy` is `Strategy.Sequential`.
 
 | Type | What it is |
 |---|---|
+| `Request` | `messages`, `data`, `mode`, `rank`, `strategy`, `pin`, `deadline`, `safeToRetry`, `idempotencyKey`, `needs`, `task`. `request.personalItems` is the `Personal` items in `data` |
+| `Item` | `Item(value: String, sensitivity: Sensitivity, label: String? = null)` |
+| `ProviderInfo` | What `approve` is told about the provider: `id: ProviderId`, `tier`, `accepts`, `capabilities`, `quality` |
+| `Result.Blocked` | `reason: String`: provider ids and skip codes, safe to show or log; never content |
+| `ai.health` | `suspend fun reset(provider: ProviderId)`, `suspend fun state(provider, network)`. Call them from a coroutine |
 | `ProviderId` | A provider's id. `result.answeredBy` and `attempt.provider` are this type; `.value` is the `String` you registered, and `toString()` prints it |
 | `Result.Answer` | `text`, `answeredBy: ProviderId`, `tier`, `attempts`, `discardPartial`, `incomplete: ProviderFailure?` |
 | `Attempt` | `provider`, `tier`, `outcome`, `why`, `elapsed`, `firstTokenAfter`, `usage` |
+| `attempts` order | Providers the policy skipped come first, in configured order; then each provider in the order it was tried or skipped while running. To pick advice for the user, look at `Failed` outcomes before `Skipped` ones |
 | `Outcome` | `Succeeded`, `Failed(failure)`, `Escalated`, `Superseded`, `Skipped(reason)` |
 
 ### Reference: every failure (`ProviderFailure`)
@@ -381,7 +394,9 @@ seconds; three other failures within a minute, 30 seconds. A second request made
 window sees `Skipped(CoolingDown)`, not the original failure, so map `CoolingDown` to a message
 of its own. After the user fixes something (a key, a permission), call
 `ai.health.reset(ProviderId("…"))` so the fix takes effect at once. A pinned provider is always
-tried, cooldown or not.
+tried, cooldown or not. A request that ends `NoVerdict` because its deadline passed does not
+count against the provider it was waiting on; a probe that finds no model ready does, so an
+instant job can put an on-device provider into cooldown for the requests that follow.
 
 ## Step 7 · The local-network permission (home servers only)
 
@@ -445,13 +460,32 @@ private fun TestScope.viewModel(vararg providers: FakeProvider, approve: Boolean
 fun `falls back and says what happened`() = runTest(dispatcher) {
     val vm = viewModel(
         FakeProvider("remote", Tier.REMOTE) { fail(ProviderFailure.RateLimited) },
-        FakeProvider("nano", Tier.ON_DEVICE) { token("from the device"); done() },
+        FakeProvider("gemini-nano", Tier.ON_DEVICE) { token("from the device"); done() },
     )
     vm.send("hi")
     advanceUntilIdle()
     assertEquals("from the device", vm.state.value.answer)
 }
 ```
+
+The constructor, in `io.github.pdrakeweb.llmtiers.testing`:
+
+```kotlin
+FakeProvider(
+    id: String,
+    tier: Tier,
+    accepts: Set<Sensitivity> = setOf(Sensitivity.Public, Sensitivity.Personal),
+    caps: Capabilities = Capabilities(),
+    probeBeforeUse: Boolean = tier == Tier.ON_DEVICE,
+    default: Script.() -> Unit = { token("ok"); done() },   // what every call does
+)
+```
+
+The script's receiver type is the top-level class `Script` in the same package; a helper of your
+own that takes a script is `fun fake(id: String, script: Script.() -> Unit) = FakeProvider(id, Tier.REMOTE, default = script)`.
+`provider.next { … }` scripts the next call only, and `provider.always { … }` replaces the default.
+An on-device fake is probed first; `provider.probeUnreachable(ProviderFailure.ModelNotReady)`
+makes that probe fail.
 
 Script steps: `token("…")`, `tokens("a", "b")`, `done()`, `fail(failure)`, `thinking()`,
 `escalate()`, `wait(duration)`, `hang()`, `crash()`. `provider.calls` and `provider.received` tell
@@ -460,7 +494,7 @@ you what a provider was sent, which is how you assert that personal data did not
 A request with a deadline, in virtual time (`ChatViewModelTest.kt`):
 
 ```kotlin
-val slow = FakeProvider("nano", Tier.ON_DEVICE) { wait(2.seconds); token("too late"); done() }
+val slow = FakeProvider("gemini-nano", Tier.ON_DEVICE) { wait(2.seconds); token("too late"); done() }
 val ai = TieredAi { provider(slow); clock = SchedulerClock(testScheduler) }
 val result = AiStreams(ai::stream).generate(Request(listOf(user("title?")), deadline = 800.milliseconds))
 assertTrue(result is Result.NoVerdict)

@@ -34,6 +34,11 @@ property of each provider, not a tier.
 | Ask several, keep the best answer | `strategy = Strategy.BestOf(2)` or `BestOf(2, judge)` |
 | A tiny job that must not wait (a title, a yes/no) | `deadline = 700.milliseconds`, giving `NoVerdict` if missed |
 
+A `pin` naming an id that is not registered (for example "only my server" when no server is
+configured) ends as `NoneAvailable`: nothing else is called, and `attempts` lists every other
+provider as `NotPinned` with no entry for the missing one. Check that the provider exists before
+offering the choice.
+
 They combine. `mode = PreferRemote, rank = Quality, strategy = Hedged()` reads: remote providers
 first, best of them first, and if the best says nothing for two seconds start the next one too.
 

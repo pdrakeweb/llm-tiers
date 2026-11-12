@@ -6,7 +6,7 @@ service) — falls back when one isn't available, and never sends data a request
 send.
 
 **Status:** T1 (core), T2 (Android) and T3 (downloaded on-device models) implemented. Adapters and
-the first consumer integration (T4) not started. Not yet published.
+the first consumer integration (T4) not started. Not yet on Maven Central; publish locally with `./gradlew publishToMavenLocal`.
 
 ```kotlin
 val ai = TieredAi {
@@ -59,12 +59,15 @@ Contract tests against real endpoints are opt-in; see [`docs/CONTRACT_TESTS.md`]
 | Doc | What it answers |
 |---|---|
 | [`docs/DESIGN.md`](docs/DESIGN.md) | Prior art, routing rules, privacy, networks |
+| [`docs/INTEGRATION.md`](docs/INTEGRATION.md) | How to add the library to an app, step by step, with a working example in [`examples/compose-hilt`](examples/compose-hilt) |
+| [`skills/llm-tiers/SKILL.md`](skills/llm-tiers/SKILL.md) | The skill an AI assistant uses to integrate the library |
 | [`docs/STRATEGIES.md`](docs/STRATEGIES.md) | Which providers run, in what order, and how: modes, pinning, ranking, race, hedged, fast-then-best, best-of |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Modules, core types, policy, executor, networking, testing |
 | [`docs/ROADMAP.md`](docs/ROADMAP.md) | Milestones T1–T4 and what proves each |
 | [`docs/DECISIONS.md`](docs/DECISIONS.md) | What is settled and who settled it |
 | [`testing/POLICY_VECTORS.md`](testing/POLICY_VECTORS.md) | The routing rules by example, and the vector file format |
 | [`docs/handoff/IMPLEMENT.md`](docs/handoff/IMPLEMENT.md) | Instructions for the implementation session |
+| [`docs/handoff/SKILL_VALIDATION.md`](docs/handoff/SKILL_VALIDATION.md) | How the usage skill was tested with agents that knew nothing, and what they found |
 | [`docs/handoff/ANDROID_SKILL_LESSONS.md`](docs/handoff/ANDROID_SKILL_LESSONS.md) | What this build taught that should go back into the Android app skill |
 
 Apache 2.0.
