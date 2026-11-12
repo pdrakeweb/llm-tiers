@@ -192,8 +192,16 @@ public class OpenAiCompatible(
                             )
                         }
                         val choice = (chunk["choices"] as? kotlinx.serialization.json.JsonArray)?.firstOrNull() as? JsonObject ?: continue
-                        val text = ((choice["delta"] as? JsonObject)?.get("content") as? JsonPrimitive)?.takeIf { it.isString }?.content
-                        if (!text.isNullOrEmpty() && trySendBlocking(ProviderEvent.Token(text)).isFailure) {
+                        val delta = choice["delta"] as? JsonObject
+                        val text = (delta?.get("content") as? JsonPrimitive)?.takeIf { it.isString }?.content
+                        val event = when {
+                            !text.isNullOrEmpty() -> ProviderEvent.Token(text)
+                            // A reasoning model at work. Only the fact is passed on, never the text.
+                            REASONING_FIELDS.any { field -> (delta?.get(field) as? JsonPrimitive)?.takeIf { it.isString }?.content?.isNotEmpty() == true } ->
+                                ProviderEvent.Thinking
+                            else -> null
+                        }
+                        if (event != null && trySendBlocking(event).isFailure) {
                             return ProviderEvent.Done(usage) // collector is gone; nothing is listening
                         }
                         if ((choice["finish_reason"] as? JsonPrimitive)?.isString == true) finished = true
@@ -308,6 +316,8 @@ public class OpenAiCompatible(
 
     private companion object {
         val JSON = "application/json; charset=utf-8".toMediaType()
+        /** `reasoning_content`: llama.cpp, LiteLLM, DeepSeek, vLLM. `reasoning`: OpenRouter, Ollama. */
+        val REASONING_FIELDS = listOf("reasoning_content", "reasoning")
         val CONTEXT_MARKERS = listOf(
             "context_length_exceeded", "context length", "maximum context", "exceed_context_size", "prompt is too long",
         )

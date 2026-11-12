@@ -367,7 +367,9 @@ class MainActivity : Activity() {
             ai.stream(request).collect { event ->
                 when (event) {
                     is Event.Started -> Unit
+                    is Event.Thinking -> answer.text = "Thinking…"
                     is Event.Token -> {
+                        if (tokenEvents == 0) answer.text = "" // replaces "Thinking…"
                         tokenEvents++
                         answer.append(event.text)
                     }

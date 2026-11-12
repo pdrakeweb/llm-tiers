@@ -220,7 +220,10 @@ public class TieredAi internal constructor(builder: TieredAiBuilder) {
             )
             when (end.kind) {
                 EndKind.Done -> {
-                    health.recordSuccess(info.id, net.id, base.firstTokenAfter, end.maxGap?.milliseconds)
+                    health.recordSuccess(
+                        info.id, net.id, base.firstTokenAfter, end.maxGap?.milliseconds,
+                        firstSignal = end.firstSignalAt?.let { (it - startedAt).milliseconds },
+                    )
                     attempts.record(base, "attempt")
                     return Result.Answer(end.text, info.id, info.tier, attempts.toList(), discardPartial = discarded)
                 }
@@ -268,6 +271,8 @@ public class TieredAi internal constructor(builder: TieredAiBuilder) {
         val kind: EndKind,
         val text: String,
         val firstTokenAt: Long?,
+        /** When the provider first showed life: its first `Thinking` or its first token. */
+        val firstSignalAt: Long?,
         val maxGap: Long?,
         val failure: ProviderFailure? = null,
         val usage: Usage? = null,
@@ -275,6 +280,11 @@ public class TieredAi internal constructor(builder: TieredAiBuilder) {
 
     /**
      * One attempt, bounded by the first-token and stall timeouts.
+     *
+     * Before any sign of life the provider has the first-token timeout. Once it reports
+     * `Thinking` it is alive: it must keep showing life within the stall timeout, and must produce
+     * its first token within the thinking allowance. After the first token only the stall timeout
+     * applies, and both tokens and `Thinking` count as life.
      *
      * The provider is collected in a job that is cancelled but deliberately not joined: a provider
      * that ignores cancellation must not be able to hang the request (invariant A-2).
@@ -293,20 +303,33 @@ public class TieredAi internal constructor(builder: TieredAiBuilder) {
             }
         }
         val text = StringBuilder()
+        val startedAt = clock.nowMillis()
         var firstAt: Long? = null
+        var firstSignalAt: Long? = null
+        var announcedThinking = false
         var lastAt = 0L
         var maxGap: Long? = null
         fun end(kind: EndKind, failure: ProviderFailure? = null, usage: Usage? = null) =
-            End(kind, text.toString(), firstAt, maxGap, failure, usage)
+            End(kind, text.toString(), firstAt, firstSignalAt, maxGap, failure, usage)
         try {
             while (true) {
-                val received = withTimeoutOrNull(if (firstAt == null) limits.firstToken else limits.stall) { channel.receiveCatching() }
+                val wait = when {
+                    firstAt != null -> limits.stall
+                    firstSignalAt != null -> {
+                        val allowance = timeouts.thinking - (clock.nowMillis() - startedAt).milliseconds
+                        if (allowance <= Duration.ZERO) return end(EndKind.Failed, ProviderFailure.FirstTokenTimeout)
+                        minOf(limits.stall, allowance)
+                    }
+                    else -> limits.firstToken
+                }
+                val received = withTimeoutOrNull(wait) { channel.receiveCatching() }
                     ?: return end(EndKind.Failed, if (firstAt == null) ProviderFailure.FirstTokenTimeout else ProviderFailure.Stalled)
                 val event = received.getOrNull()
                     ?: return end(EndKind.Failed, ProviderFailure.Other("stream ended without Done"))
                 val now = clock.nowMillis()
                 when (event) {
                     is ProviderEvent.Token -> {
+                        if (firstSignalAt == null) firstSignalAt = now
                         if (firstAt == null) firstAt = now else maxGap = maxOf(maxGap ?: 0, now - lastAt)
                         lastAt = now
                         text.append(event.text)
@@ -315,6 +338,18 @@ public class TieredAi internal constructor(builder: TieredAiBuilder) {
                     is ProviderEvent.Done -> {
                         if (firstAt != null) maxGap = maxOf(maxGap ?: 0, now - lastAt)
                         return end(EndKind.Done, usage = event.usage)
+                    }
+                    ProviderEvent.Thinking -> {
+                        if (firstSignalAt == null) firstSignalAt = now
+                        // Between tokens it is a sign of life like any other, so it counts for the stall gap.
+                        if (firstAt != null) {
+                            maxGap = maxOf(maxGap ?: 0, now - lastAt)
+                            lastAt = now
+                        }
+                        if (!announcedThinking) {
+                            announcedThinking = true
+                            emit(Event.Thinking(provider.id))
+                        }
                     }
                     ProviderEvent.Escalate -> return end(EndKind.Escalated)
                     is ProviderEvent.Failed -> return end(EndKind.Failed, event.failure)

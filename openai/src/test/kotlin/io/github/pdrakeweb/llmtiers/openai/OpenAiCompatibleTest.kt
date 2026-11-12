@@ -167,17 +167,40 @@ class OpenAiCompatibleTest {
     }
 
     @Test
-    fun `comments, keep-alives, reasoning deltas and empty content are not tokens`() {
+    fun `comments, keep-alives, role-only and empty deltas are neither tokens nor thinking`() {
         server.onChat = {
             it.startSse()
             it.raw(": OPENROUTER PROCESSING\n\n")
             it.event("""{"choices":[{"delta":{"role":"assistant","content":""}}]}""")
-            it.event("""{"choices":[{"delta":{"reasoning_content":"thinking..."}}]}""")
-            it.event("""{"choices":[{"delta":{"content":null}}]}""")
+            it.event("""{"choices":[{"delta":{"content":null,"reasoning_content":null}}]}""")
+            it.event("""{"choices":[{"delta":{"reasoning_content":""}}]}""")
             it.event(chunk("answer"))
             it.event("[DONE]")
         }
         assertEquals(listOf(ProviderEvent.Token("answer"), ProviderEvent.Done(null)), provider().collect())
+    }
+
+    @Test
+    fun `reasoning deltas become Thinking - a sign of life with no text`() {
+        val secret = "SECRET-REASONING"
+        server.onChat = {
+            it.startSse()
+            it.event("""{"choices":[{"delta":{"role":"assistant","content":null}}]}""")
+            it.event("""{"choices":[{"delta":{"reasoning_content":"$secret one"}}]}""") // llama.cpp, LiteLLM, DeepSeek
+            it.event("""{"choices":[{"delta":{"reasoning":"$secret two"}}]}""") // OpenRouter
+            it.event("""{"choices":[{"delta":{"reasoning_content":"$secret three","content":"Hi"}}]}""") // both: the text wins
+            it.event(chunk(" there"))
+            it.event("[DONE]")
+        }
+        val events = provider().collect()
+        assertEquals(
+            listOf(
+                ProviderEvent.Thinking, ProviderEvent.Thinking,
+                ProviderEvent.Token("Hi"), ProviderEvent.Token(" there"), ProviderEvent.Done(null),
+            ),
+            events,
+        )
+        assertFalse(secret in events.toString(), "reasoning text is never passed on")
     }
 
     @Test
@@ -247,7 +270,10 @@ class OpenAiCompatibleTest {
             server.onChat = {
                 it.sse("""{"choices":[{"delta":{"reasoning_content":"thinking"}}]}""", """{"error":{"code":$code,"message":"no"}}""")
             }
-            assertEquals(listOf<ProviderEvent>(ProviderEvent.Failed(ProviderFailure.Other("stream error $code"))), provider().collect())
+            assertEquals(
+                listOf(ProviderEvent.Thinking, ProviderEvent.Failed(ProviderFailure.Other("stream error $code"))),
+                provider().collect(),
+            )
         }
         server.onChat = { it.sse("""{"error":{"code":502,"message":"upstream"}}""") }
         assertEquals(listOf<ProviderEvent>(ProviderEvent.Failed(ProviderFailure.Server(502))), provider().collect())

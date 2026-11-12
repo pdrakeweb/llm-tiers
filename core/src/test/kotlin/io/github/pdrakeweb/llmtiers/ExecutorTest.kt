@@ -412,6 +412,110 @@ class ExecutorTest {
         assertEquals(AttemptTimeouts(10.seconds, 5.seconds), ai.health.timeoutsFor(ProviderId("a")))
     }
 
+    // ---- thinking (reasoning models) ----------------------------------------------------------
+
+    @Test
+    fun `a provider that is thinking is alive - it may take longer than the first-token timeout`() = runTest {
+        val a = FakeProvider("a", LAN) {
+            repeat(30) { wait(1.seconds); thinking() }
+            token("answer"); done()
+        }
+        val b = FakeProvider("b", CLOUD)
+        val events = ai(a, b).stream(hi).toList()
+        val result = (events.last() as Event.Completed).result
+
+        assertIs<Result.Answer>(result, "30 s of thinking must not be read as 10 s of silence")
+        assertEquals(ProviderId("a"), result.answeredBy)
+        assertEquals(0, b.calls)
+        assertEquals(30.seconds, result.attempts.single().firstTokenAfter, "first token time is the first answer text")
+        assertEquals(1, events.count { it is Event.Thinking }, "the app is told once, not thirty times")
+        assertTrue(events.indexOf(Event.Thinking(ProviderId("a"))) < events.indexOf(Event.Token("answer")))
+        assertTrue(events.indexOf(Event.Started(ProviderId("a"), LAN)) < events.indexOf(Event.Thinking(ProviderId("a"))))
+    }
+
+    @Test
+    fun `thinking that goes quiet is a first-token timeout after the stall timeout`() = runTest {
+        val a = FakeProvider("a", LAN) { wait(2.seconds); thinking(); hang() }
+        val b = FakeProvider("b", CLOUD)
+        val result = ai(a, b).generate(hi)
+        assertEquals(ProviderId("b"), (result as Result.Answer).answeredBy)
+        assertEquals(Outcome.Failed(ProviderFailure.FirstTokenTimeout), result.outcomeOf("a"))
+        assertEquals(2_000 + 5_000, currentTime, "5 s without a sign of life, not the full thinking allowance")
+    }
+
+    @Test
+    fun `thinking is not unlimited - it is capped, so a model that never answers cannot hold the request`() = runTest {
+        val a = FakeProvider("a", LAN) { repeat(100_000) { wait(1.seconds); thinking() } }
+        val b = FakeProvider("b", CLOUD)
+        val result = ai(a, b).generate(hi)
+        assertEquals(ProviderId("b"), (result as Result.Answer).answeredBy)
+        assertEquals(Outcome.Failed(ProviderFailure.FirstTokenTimeout), result.outcomeOf("a"))
+        assertEquals(120_000, currentTime, "the default thinking allowance is two minutes")
+    }
+
+    @Test
+    fun `the thinking allowance is configurable`() = runTest {
+        val a = FakeProvider("a", LAN) { repeat(100_000) { wait(1.seconds); thinking() } }
+        val result = ai(a) { timeouts = TimeoutConfig(thinking = 20.seconds) }.generate(hi)
+        assertIs<Result.NoneAvailable>(result)
+        assertEquals(20_000, currentTime)
+    }
+
+    @Test
+    fun `a provider that neither thinks nor answers still gets only the first-token timeout`() = runTest {
+        val a = FakeProvider("a", LAN) { wait(11.seconds); thinking(); token("late"); done() }
+        val result = ai(a).generate(hi)
+        assertIs<Result.NoneAvailable>(result)
+        assertEquals(10_000, currentTime, "thinking has to start within the first-token timeout")
+    }
+
+    @Test
+    fun `thinking between tokens keeps a long answer from being called stalled`() = runTest {
+        val a = FakeProvider("a", CLOUD) {
+            token("part one, ")
+            repeat(8) { wait(1.seconds); thinking() }
+            token("part two"); done()
+        }
+        val events = ai(a).stream(hi).toList()
+        val result = (events.last() as Event.Completed).result as Result.Answer
+        assertEquals("part one, part two", result.text)
+        assertNull(result.incomplete, "8 s between tokens, but never 5 s without a sign of life")
+    }
+
+    @Test
+    fun `timeouts are learned from the first sign of life, latency from the first answer text`() = runTest {
+        val a = FakeProvider("a", LAN) { wait(100.milliseconds); thinking(); wait(3.seconds); token("t"); done() }
+        val ai = ai(a)
+        repeat(20) { ai.generate(hi) }
+        assertEquals(
+            1.seconds, ai.health.timeoutsFor(ProviderId("a")).firstToken,
+            "the model shows life in 100 ms; 3 s of thinking must not stretch the timeout for silence",
+        )
+        assertEquals(
+            3100.milliseconds, ai.health.snapshot(NetworkState.Unknown.id)[ProviderId("a")].typicalFirstToken,
+            "for latency budgets what counts is when the answer starts",
+        )
+    }
+
+    @Test
+    fun `a thinking provider that then fails or escalates is handled like any other`() = runTest {
+        val fails = FakeProvider("fails", LAN) { thinking(); fail(ProviderFailure.Server(500)) }
+        val escalates = FakeProvider("escalates", ON_DEVICE) { thinking(); escalate() }
+        val b = FakeProvider("b", CLOUD)
+        val result = ai(fails, escalates, b).generate(hi)
+        assertEquals(ProviderId("b"), (result as Result.Answer).answeredBy)
+        assertEquals(Outcome.Failed(ProviderFailure.Server(500)), result.outcomeOf("fails"))
+        assertEquals(Outcome.Escalated, result.outcomeOf("escalates"))
+        assertFalse(result.discardPartial, "thinking is not partial output")
+    }
+
+    @Test
+    fun `a hard deadline still ends a thinking provider on time`() = runTest {
+        val a = FakeProvider("a", ON_DEVICE) { repeat(100) { wait(100.milliseconds); thinking() } }
+        assertIs<Result.NoVerdict>(ai(a).generate(hi.copy(deadline = 700.milliseconds)))
+        assertEquals(700, currentTime)
+    }
+
     // ---- hard deadline ------------------------------------------------------------------------
 
     @Test

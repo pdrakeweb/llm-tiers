@@ -37,6 +37,13 @@ public sealed interface ProviderEvent {
     }
     public data class Done(val usage: Usage?) : ProviderEvent
 
+    /**
+     * "I am working on it, but have no answer text yet": a reasoning model that is thinking. It
+     * carries no content. The executor counts it as a sign of life, so a provider that thinks for
+     * longer than the first-token timeout is not mistaken for one that is silent.
+     */
+    public data object Thinking : ProviderEvent
+
     /** "I can't answer this; try the next tier." */
     public data object Escalate : ProviderEvent
     public data class Failed(val failure: ProviderFailure) : ProviderEvent

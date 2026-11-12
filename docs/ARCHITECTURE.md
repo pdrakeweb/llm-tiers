@@ -41,6 +41,7 @@ interface Provider {
 sealed interface ProviderEvent {
     data class Token(val text: String) : ProviderEvent
     data class Done(val usage: Usage?) : ProviderEvent
+    data object Thinking : ProviderEvent             // "working, no answer text yet" (reasoning model)
     data object Escalate : ProviderEvent             // "I can't answer this; try the next tier"
     data class Failed(val failure: ProviderFailure) : ProviderEvent
 }
@@ -55,7 +56,8 @@ sealed interface ProviderFailure {                  // exhaustive by design
 
 sealed interface Result {
     data class Answer(val text: String, val answeredBy: ProviderId, val tier: Tier,
-                      val attempts: List<Attempt>, val discardPartial: Boolean) : Result
+                      val attempts: List<Attempt>, val discardPartial: Boolean,
+                      val incomplete: ProviderFailure? = null) : Result   // D-009
     data class Answered(val shortCircuit: Any) : Result   // app hook answered; no model ran
     data class Blocked(val reason: String) : Result         // privacy left no allowed provider
     data class NoVerdict(val attempts: List<Attempt>) : Result // hard deadline missed
@@ -63,8 +65,9 @@ sealed interface Result {
 }
 ```
 
-Streaming API: `ai.stream(request): Flow<Event>` emits `Started(provider)`, `Token`,
-`FellBack(from, to, reason, discardPartial)`, then `Completed(result)`.
+Streaming API: `ai.stream(request): Flow<Event>` emits `Started(provider)`, `Thinking(provider)`
+(once, when a reasoning model starts thinking), `Token`, `FellBack(from, to, reason, discardPartial)`,
+then `Completed(result)`.
 
 ## 3. Policy
 
@@ -77,6 +80,11 @@ by JSON test vectors in `:testing` so copies of the pattern can check themselves
 
 - Runs steps in order. Per attempt: first-token timeout and stall timeout, learned per provider as
   a high percentile of observed values (fixed defaults until 20 samples).
+- A provider that reports `Thinking` is alive, not silent (D-031). The first-token timeout bounds
+  the wait for its first sign of life. After that it must keep showing life within the stall
+  timeout and produce its first token within a thinking allowance (2 minutes by default). The
+  learned first-token timeout comes from the first sign of life; latency budgets use the time to
+  the first answer text.
 - Falls back on any `ProviderFailure` except `AuthRejected`/`KeyMissing` on a *pinned* provider
   (those surface immediately — the user chose it).
 - First-token commit: after the first token, a failure ends the request with what was received and

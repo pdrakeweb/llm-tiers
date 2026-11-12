@@ -122,6 +122,12 @@ public sealed interface Event {
     }
 
     /**
+     * The provider is reasoning before it answers. Emitted once per attempt, before any token
+     * from it, so an app can show "thinking" instead of an empty wait.
+     */
+    public data class Thinking(val provider: ProviderId) : Event
+
+    /**
      * The request moved from one provider to the next.
      * @property discardPartial true when [from] had already streamed tokens (it escalated); the
      *   app must clear them.
