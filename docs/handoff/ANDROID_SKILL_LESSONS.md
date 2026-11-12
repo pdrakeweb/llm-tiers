@@ -29,8 +29,9 @@ The skill was read at the version installed on 11 Nov 2026 (pins "verified 2026-
 - **File:** `permissions-storage-cloud.md` (wherever downloads are discussed), and the same new
   API 37 section.
 - **Observed:** a `DownloadManager` request for `http://10.0.2.2:18403/…` stayed `PENDING` at zero
-  bytes indefinitely. The server was never contacted and no error was reported, even with the
-  app holding the local-network permission. The identical file through a loopback address
+  bytes indefinitely. The server was never contacted and no error was reported, although the
+  app had been granted the local-network permission earlier in the same session (the grant was not
+  re-checked at that moment). The identical file through a loopback address
   downloaded at once.
 - **Proposed text:** anything fetched with `DownloadManager` must be on a public address. A file
   served from a LAN host will hang without a failure. This is the worst kind of failure by the
