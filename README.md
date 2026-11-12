@@ -57,5 +57,6 @@ Contract tests against real endpoints are opt-in; see [`docs/CONTRACT_TESTS.md`]
 | [`docs/DECISIONS.md`](docs/DECISIONS.md) | What is settled and who settled it |
 | [`testing/POLICY_VECTORS.md`](testing/POLICY_VECTORS.md) | The routing rules by example, and the vector file format |
 | [`docs/handoff/IMPLEMENT.md`](docs/handoff/IMPLEMENT.md) | Instructions for the implementation session |
+| [`docs/handoff/ANDROID_SKILL_LESSONS.md`](docs/handoff/ANDROID_SKILL_LESSONS.md) | What this build taught that should go back into the Android app skill |
 
 Apache 2.0.
