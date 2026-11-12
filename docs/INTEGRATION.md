@@ -139,7 +139,7 @@ class AiGateway @Inject constructor(
         // Registration order is the default order of preference.
         if (s.remoteUrl.isNotBlank()) {
             val remote = OpenAiCompatible("remote", s.remoteUrl, s.remoteModel, apiKey = s.apiKey, client = http)
-            provider(if (s.remoteUrl.startsWith("http://")) remote.requiringLocalNetworkPermission(context) else remote, quality = 0.9)
+            provider(if (isHomeNetworkUrl(s.remoteUrl)) remote.requiringLocalNetworkPermission(context) else remote, quality = 0.9)
         }
         provider(nano, quality = 0.3)
 
@@ -302,7 +302,9 @@ val askPermission = rememberLauncherForActivityResult(ActivityResultContracts.Re
 if (needsPermission) OutlinedButton({ askPermission.launch(ACCESS_LOCAL_NETWORK) }) { Text("Allow access to devices on your network") }
 ```
 
-`needsLocalNetworkPermission(context)` tells you whether to show the button. Reset the provider's
+`needsLocalNetworkPermission(context)` tells you whether to show the button. Wrap only
+providers at home-network addresses: a loopback address (`127.0.0.1`, `localhost`) is exempt
+from the permission and must not be gated on it (`isHomeNetworkUrl` in `Ai.kt`). Reset the provider's
 health after the user answers, or the library keeps skipping it for the rest of its cooldown.
 
 ## Step 8 · Downloaded on-device models (optional)

@@ -82,7 +82,7 @@ class SettingsViewModel @Inject constructor(
     }
 
     fun needsLocalNetworkPermission(): Boolean =
-        _settings.value.remoteUrl.startsWith("http://") && needsLocalNetworkPermission(context)
+        isHomeNetworkUrl(_settings.value.remoteUrl) && needsLocalNetworkPermission(context)
 
     fun localNetworkPermissionAnswered() {
         viewModelScope.launch { gateway.forgetRemoteHealth() }

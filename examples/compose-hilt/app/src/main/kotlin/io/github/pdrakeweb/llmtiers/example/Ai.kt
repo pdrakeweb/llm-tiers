@@ -105,8 +105,8 @@ class AiGateway @Inject constructor(
         // Registration order is the default order of preference.
         if (s.remoteUrl.isNotBlank()) {
             val remote = OpenAiCompatible(REMOTE, s.remoteUrl, s.remoteModel, apiKey = s.apiKey, client = http)
-            // A plain-HTTP URL is a server on the home network: gate it on the Android 17 permission.
-            provider(if (s.remoteUrl.startsWith("http://")) remote.requiringLocalNetworkPermission(context) else remote, quality = 0.9)
+            // A server on the home network needs the Android 17 local-network permission: gate it.
+            provider(if (isHomeNetworkUrl(s.remoteUrl)) remote.requiringLocalNetworkPermission(context) else remote, quality = 0.9)
         }
         s.model()?.let { provider(localModel(it), quality = 0.5) }
         provider(nano, quality = 0.3)
@@ -129,6 +129,13 @@ class AiGateway @Inject constructor(
         const val LOCAL = "local"
     }
 }
+
+/**
+ * A plain-HTTP URL that is not this device itself. Loopback addresses are exempt from the
+ * local-network permission, so a server running on the phone must not be gated on it.
+ */
+fun isHomeNetworkUrl(url: String): Boolean =
+    url.startsWith("http://") && !Regex("""^http://(127\.|localhost[:/]|\[::1])""").containsMatchIn(url)
 
 fun AiSettings.model(): ModelSpec? = OpenModels.all.firstOrNull { it.id == modelId }
 
