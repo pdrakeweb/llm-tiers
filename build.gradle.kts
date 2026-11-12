@@ -1,3 +1,4 @@
+import com.android.build.api.dsl.LibraryExtension
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import org.jetbrains.kotlin.gradle.dsl.KotlinJvmProjectExtension
 
@@ -30,6 +31,47 @@ subprojects {
         tasks.withType<Test>().configureEach {
             useJUnitPlatform()
             testLogging { events("failed", "skipped") }
+        }
+
+        apply(plugin = "maven-publish")
+        extensions.configure<JavaPluginExtension> { withSourcesJar() }
+        extensions.configure<PublishingExtension> {
+            publications.create<MavenPublication>("maven") {
+                from(components["java"])
+                describe(project)
+            }
+        }
+    }
+
+    // The Android libraries publish their release variant.
+    plugins.withId("com.android.library") {
+        apply(plugin = "maven-publish")
+        extensions.configure<LibraryExtension> {
+            publishing { singleVariant("release") { withSourcesJar() } }
+        }
+        afterEvaluate {
+            extensions.configure<PublishingExtension> {
+                publications.create<MavenPublication>("maven") {
+                    from(components["release"])
+                    describe(project)
+                }
+            }
+        }
+    }
+}
+
+/** Coordinates: `io.github.pdrakeweb:llm-tiers-<module>:<version>`. */
+fun MavenPublication.describe(project: Project) {
+    artifactId = "llm-tiers-${project.name}"
+    pom {
+        name.set("llm-tiers-${project.name}")
+        description.set("llm-tiers: route AI requests across on-device and remote providers with privacy rules and real failover.")
+        url.set("https://github.com/pdrakeweb/llm-tiers")
+        licenses {
+            license {
+                name.set("Apache-2.0")
+                url.set("https://www.apache.org/licenses/LICENSE-2.0")
+            }
         }
     }
 }

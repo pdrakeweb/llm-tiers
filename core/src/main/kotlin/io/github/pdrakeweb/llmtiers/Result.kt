@@ -55,6 +55,9 @@ public sealed interface Outcome {
     public data object Succeeded : Outcome
     public data class Failed(val failure: ProviderFailure) : Outcome
     public data object Escalated : Outcome
+
+    /** The provider was started but another one was used instead; it was cancelled. */
+    public data object Superseded : Outcome
     public data class Skipped(val reason: SkipReason) : Outcome
 }
 
@@ -122,6 +125,12 @@ public sealed interface Event {
     }
 
     /**
+     * The provider is reasoning before it answers. Emitted once per attempt, before any token
+     * from it, so an app can show "thinking" instead of an empty wait.
+     */
+    public data class Thinking(val provider: ProviderId) : Event
+
+    /**
      * The request moved from one provider to the next.
      * @property discardPartial true when [from] had already streamed tokens (it escalated); the
      *   app must clear them.
@@ -132,6 +141,12 @@ public sealed interface Event {
         val reason: Outcome,
         val discardPartial: Boolean,
     ) : Event
+
+    /**
+     * A quick answer from [from] is on screen and the better answer from [to] is ready: clear the
+     * text and show what follows. Used by [Strategy.FastThenBest].
+     */
+    public data class Upgrading(val from: ProviderId, val to: ProviderId) : Event
 
     public data class Completed(val result: Result) : Event
 }

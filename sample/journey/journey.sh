@@ -44,40 +44,48 @@ step() {
   fi
 }
 
-common=(--es lanUrl "$HOME_URL" --es lanModel fake-model --es cloudUrl "$CLOUD_URL" --es cloudModel fake-model)
+# The downloaded-model tier has its own journeys; leaving it out keeps this one independent of
+# whether a model happens to be on the device.
+common=(--es lanUrl "$HOME_URL" --es lanModel fake-model --es cloudUrl "$CLOUD_URL" --es cloudModel fake-model --es order home,cloud,nano)
 
 "$ADB" shell pm revoke $PKG android.permission.ACCESS_LOCAL_NETWORK >/dev/null 2>&1
 step "1. Local-network permission not granted: home is skipped with the reason, cloud answers" \
-  "Answer by=cloud" "provider=home tier=LAN outcome=LocalNetworkPermissionDenied" 1500 -- "${common[@]}"
+  "Answer by=cloud" "provider=home tier=REMOTE outcome=LocalNetworkPermissionDenied" 1500 -- "${common[@]}"
 
 "$ADB" shell pm grant $PKG android.permission.ACCESS_LOCAL_NETWORK
-step "2. Permission granted, home server up: LAN answers" \
-  "Answer by=home" "provider=home tier=LAN outcome=Succeeded" "" -- "${common[@]}"
+step "2. Permission granted, home server up: it answers" \
+  "Answer by=home" "provider=home tier=REMOTE outcome=Succeeded" "" -- "${common[@]}"
 
 stop_home
 step "3. Home server stopped (connection refused): cloud answers" \
-  "Answer by=cloud" "provider=home tier=LAN outcome=Unreachable" 1500 -- "${common[@]}"
+  "Answer by=cloud" "provider=home tier=REMOTE outcome=Unreachable" 1500 -- "${common[@]}"
 
 step "4. Home address silent (no reply at all, as when away from home): cloud answers within 1.5 s" \
-  "Answer by=cloud" "provider=home tier=LAN outcome=Unreachable" 1500 -- "${common[@]}" --es lanUrl http://10.255.255.1:18401/v1
+  "Answer by=cloud" "provider=home tier=REMOTE outcome=Unreachable" 1500 -- "${common[@]}" --es lanUrl http://10.255.255.1:18401/v1
 
 start_home
-step "5. Home server back: LAN answers again" \
-  "Answer by=home" "provider=home tier=LAN outcome=Succeeded" "" -- "${common[@]}"
+step "5. Home server back: it answers again" \
+  "Answer by=home" "provider=home tier=REMOTE outcome=Succeeded" "" -- "${common[@]}"
 
 step "6. Pinned to home while it cannot answer: not replaced by cloud" \
-  "NoneAvailable" "provider=cloud tier=CLOUD outcome=NotPinned" "" -- "${common[@]}" --es lanUrl http://10.255.255.1:18401/v1 --es pin home
+  "NoneAvailable" "provider=cloud tier=REMOTE outcome=NotPinned" "" -- "${common[@]}" --es lanUrl http://10.255.255.1:18401/v1 --es pin home
 
 step "7. Plain HTTP to a public host is refused before anything is sent; home answers" \
-  "Answer by=home" "provider=cloud tier=CLOUD outcome=Unreachable" "" -- "${common[@]}" --es cloudUrl http://example.com/v1 --es order cloud,home
+  "Answer by=home" "provider=cloud tier=REMOTE outcome=Unreachable" "" -- "${common[@]}" --es cloudUrl http://example.com/v1 --es order cloud,home
 
 step "8. Personal note with approval: sent to home" \
-  "Answer by=home" "provider=home tier=LAN outcome=Succeeded" "" -- "${common[@]}" --es personal "journey note"
+  "Answer by=home" "provider=home tier=REMOTE outcome=Succeeded" "" -- "${common[@]}" --es personal "journey note"
+
+step "10. Race: both remote providers start, the first with text wins, the other is cancelled" \
+  "Answer by=" "outcome=Superseded" 1500 -- "${common[@]}" --es strategy Race
+
+step "11. Ranked by quality: the higher-quality cloud provider goes first although home is listed first" \
+  "Answer by=cloud" "provider=cloud tier=REMOTE outcome=Succeeded" "" -- "${common[@]}" --es rank Quality
 
 "$ADB" shell cmd connectivity airplane-mode enable
 "$ADB" shell sleep 3
-step "9. Offline: network tiers are skipped, the on-device tier is the only one consulted" \
-  "" "provider=cloud tier=CLOUD outcome=Offline" 1500 -- "${common[@]}"
+step "9. Offline: remote providers are skipped, only on-device ones are consulted" \
+  "" "provider=cloud tier=REMOTE outcome=Offline" 1500 -- "${common[@]}"
 "$ADB" shell cmd connectivity airplane-mode disable
 
 [ $fail -eq 0 ] && echo "JOURNEY PASSED" || echo "JOURNEY FAILED"

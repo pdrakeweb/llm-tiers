@@ -83,21 +83,21 @@ class LocalNetworkGateTest {
 
     @Test
     fun `without the permission the provider reports LocalNetworkPermissionDenied and is never called`() = runTest {
-        val lan = FakeProvider("home", Tier.LAN)
+        val lan = FakeProvider("home", Tier.REMOTE, probeBeforeUse = true)
         val gated = LocalNetworkGate(lan) { true }
 
         assertEquals(Reachability.Unreachable(ProviderFailure.LocalNetworkPermissionDenied), gated.probe())
         assertEquals(listOf<ProviderEvent>(ProviderEvent.Failed(ProviderFailure.LocalNetworkPermissionDenied)), gated.stream(request).toList())
         assertEquals(0, lan.calls + lan.probes)
         assertEquals(lan.id, gated.id)
-        assertEquals(Tier.LAN, gated.tier)
+        assertEquals(Tier.REMOTE, gated.tier)
     }
 
     @Test
     fun `the router falls through cleanly and switches back as soon as the permission is granted`() = runTest {
         var missing = true
-        val lan = FakeProvider("home", Tier.LAN) { token("lan"); done() }
-        val cloud = FakeProvider("cloud", Tier.CLOUD) { token("cloud"); done() }
+        val lan = FakeProvider("home", Tier.REMOTE, probeBeforeUse = true) { token("lan"); done() }
+        val cloud = FakeProvider("cloud", Tier.REMOTE) { token("cloud"); done() }
         val ai = TieredAi {
             provider(LocalNetworkGate(lan) { missing })
             provider(cloud)
@@ -212,7 +212,7 @@ class GeminiNanoTest {
     @Test
     fun `in the router - Nano not ready falls through, Nano busy cools down briefly`() = runTest {
         val engine = FakeEngine(status = NanoStatus.Downloadable)
-        val cloud = FakeProvider("cloud", Tier.CLOUD) { token("cloud"); done() }
+        val cloud = FakeProvider("cloud", Tier.REMOTE) { token("cloud"); done() }
         val ai = TieredAi {
             provider(GeminiNano("gemini-nano", engine))
             provider(cloud)

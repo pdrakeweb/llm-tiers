@@ -57,12 +57,12 @@ class OpenAiCompatibleTest {
     fun stop() = server.close()
 
     private fun provider(
-        tier: Tier = Tier.LAN,
+        requiresKey: Boolean = false,
         apiKey: String? = null,
         baseUrl: String = server.baseUrl,
         capabilities: Capabilities = Capabilities(maxContext = 8192),
         client: OkHttpClient = OkHttpClient(),
-    ) = OpenAiCompatible("p", baseUrl, "test-model", tier, apiKey = apiKey, capabilities = capabilities, client = client)
+    ) = OpenAiCompatible("p", baseUrl, "test-model", apiKey = apiKey, requiresKey = requiresKey, capabilities = capabilities, client = client)
 
     private fun OpenAiCompatible.collect(request: PreparedRequest = hello): List<ProviderEvent> =
         runBlocking { withTimeout(15.seconds) { stream(request).toList() } }
@@ -167,17 +167,40 @@ class OpenAiCompatibleTest {
     }
 
     @Test
-    fun `comments, keep-alives, reasoning deltas and empty content are not tokens`() {
+    fun `comments, keep-alives, role-only and empty deltas are neither tokens nor thinking`() {
         server.onChat = {
             it.startSse()
             it.raw(": OPENROUTER PROCESSING\n\n")
             it.event("""{"choices":[{"delta":{"role":"assistant","content":""}}]}""")
-            it.event("""{"choices":[{"delta":{"reasoning_content":"thinking..."}}]}""")
-            it.event("""{"choices":[{"delta":{"content":null}}]}""")
+            it.event("""{"choices":[{"delta":{"content":null,"reasoning_content":null}}]}""")
+            it.event("""{"choices":[{"delta":{"reasoning_content":""}}]}""")
             it.event(chunk("answer"))
             it.event("[DONE]")
         }
         assertEquals(listOf(ProviderEvent.Token("answer"), ProviderEvent.Done(null)), provider().collect())
+    }
+
+    @Test
+    fun `reasoning deltas become Thinking - a sign of life with no text`() {
+        val secret = "SECRET-REASONING"
+        server.onChat = {
+            it.startSse()
+            it.event("""{"choices":[{"delta":{"role":"assistant","content":null}}]}""")
+            it.event("""{"choices":[{"delta":{"reasoning_content":"$secret one"}}]}""") // llama.cpp, LiteLLM, DeepSeek
+            it.event("""{"choices":[{"delta":{"reasoning":"$secret two"}}]}""") // OpenRouter
+            it.event("""{"choices":[{"delta":{"reasoning_content":"$secret three","content":"Hi"}}]}""") // both: the text wins
+            it.event(chunk(" there"))
+            it.event("[DONE]")
+        }
+        val events = provider().collect()
+        assertEquals(
+            listOf(
+                ProviderEvent.Thinking, ProviderEvent.Thinking,
+                ProviderEvent.Token("Hi"), ProviderEvent.Token(" there"), ProviderEvent.Done(null),
+            ),
+            events,
+        )
+        assertFalse(secret in events.toString(), "reasoning text is never passed on")
     }
 
     @Test
@@ -247,7 +270,10 @@ class OpenAiCompatibleTest {
             server.onChat = {
                 it.sse("""{"choices":[{"delta":{"reasoning_content":"thinking"}}]}""", """{"error":{"code":$code,"message":"no"}}""")
             }
-            assertEquals(listOf<ProviderEvent>(ProviderEvent.Failed(ProviderFailure.Other("stream error $code"))), provider().collect())
+            assertEquals(
+                listOf(ProviderEvent.Thinking, ProviderEvent.Failed(ProviderFailure.Other("stream error $code"))),
+                provider().collect(),
+            )
         }
         server.onChat = { it.sse("""{"error":{"code":502,"message":"upstream"}}""") }
         assertEquals(listOf<ProviderEvent>(ProviderEvent.Failed(ProviderFailure.Server(502))), provider().collect())
@@ -295,8 +321,8 @@ class OpenAiCompatibleTest {
     }
 
     @Test
-    fun `a cloud provider without a key fails with KeyMissing and makes no request`() {
-        val p = provider(tier = Tier.CLOUD, apiKey = " ")
+    fun `a provider that needs a key and has none fails with KeyMissing and makes no request`() {
+        val p = provider(requiresKey = true, apiKey = " ")
         assertEquals(listOf<ProviderEvent>(ProviderEvent.Failed(ProviderFailure.KeyMissing)), p.collect())
         assertEquals(Reachability.Unreachable(ProviderFailure.KeyMissing), runBlocking { p.probe() })
         assertTrue(server.requests.isEmpty())
@@ -372,10 +398,10 @@ class OpenAiCompatibleTest {
     }
 
     @Test
-    fun `end to end - LAN server gone, the cloud endpoint answers, and the result says so`() {
+    fun `end to end - home server gone, the cloud endpoint answers, and the result says so`() {
         server.onChat = { it.sse(chunk("from "), chunk("cloud"), finish(), "[DONE]") }
-        val lan = OpenAiCompatible("home-llama", "http://127.0.0.1:${closedPort()}/v1", "m", Tier.LAN)
-        val cloud = OpenAiCompatible("openrouter", server.baseUrl, "m", Tier.CLOUD, apiKey = "k")
+        val lan = OpenAiCompatible("home-llama", "http://127.0.0.1:${closedPort()}/v1", "m")
+        val cloud = OpenAiCompatible("openrouter", server.baseUrl, "m", requiresKey = true, probeBeforeUse = false, apiKey = "k")
         val ai = TieredAi {
             provider(lan)
             provider(cloud)

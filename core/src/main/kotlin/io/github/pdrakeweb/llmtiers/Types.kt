@@ -6,14 +6,18 @@ public value class ProviderId(public val value: String) {
     override fun toString(): String = value
 }
 
-/** Where a provider runs. */
-public enum class Tier { ON_DEVICE, LAN, CLOUD }
+/**
+ * Where a provider runs: on this device, or anywhere else. A home server, a self-hosted gateway
+ * and a commercial API are all [REMOTE]; what differs between them (how often they are
+ * unreachable, what address they live at) is a property of the provider, not a tier.
+ */
+public enum class Tier { ON_DEVICE, REMOTE }
 
 /**
  * How sensitive a data item is. An app maps its own data classes onto these.
  *
  * - [Public]: may be sent to any provider that accepts it.
- * - [Personal]: reaches a LAN or cloud provider only after the app approves that request for that
+ * - [Personal]: reaches a remote provider only after the app approves that request for that
  *   provider.
  * - [Identifier]: never leaves the device. It is removed before planning; no API sends one.
  */

@@ -28,7 +28,7 @@ class PolicyVectorsTest {
     @Test
     fun `vector names are unique and there are enough to document every rule`() {
         assertEquals(vectors.size, vectors.map { it.name }.toSet().size)
-        assertTrue(vectors.size >= 30, "expected at least 30 vectors, found ${vectors.size}")
+        assertTrue(vectors.size >= 40, "expected at least 40 vectors, found ${vectors.size}")
     }
 
     @Test

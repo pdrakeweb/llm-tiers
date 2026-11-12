@@ -40,8 +40,13 @@ public fun plan(
         if (reason != null) skipped += Skipped(p.id, p.tier, reason) else kept += p
     }
 
-    // Mode: a stable sort, so providers of the same rank keep the app's order.
-    val ordered = if (preferred != null && request.pin == null) kept.sortedBy { if (it.tier == preferred) 0 else 1 } else kept
+    // Ranking, then mode. Both are stable sorts, so ties keep the app's order and the preferred
+    // tier stays in front with the ranking applied inside each group.
+    val ranked = when (val rank = request.rank) {
+        Ranking.AppOrder -> kept
+        else -> kept.sortedByDescending { score(rank, it, health) }
+    }
+    val ordered = if (preferred != null && request.pin == null) ranked.sortedBy { if (it.tier == preferred) 0 else 1 } else ranked
 
     var steps = ordered.map { p ->
         Step(
@@ -51,6 +56,9 @@ public fun plan(
                 request.pin != null -> "pinned by the user"
                 preferred != null && p.tier == preferred -> "preferred tier (${request.mode})"
                 only != null -> "only tier allowed (${request.mode})"
+                request.rank == Ranking.Quality -> "ranked by quality"
+                request.rank == Ranking.Speed -> "ranked by speed"
+                request.rank is Ranking.Weighted -> "ranked by quality and speed"
                 else -> "app order"
             },
         )
@@ -74,15 +82,28 @@ public fun plan(
 
 private fun preferredTier(mode: Mode): Tier? = when (mode) {
     Mode.PreferOnDevice -> Tier.ON_DEVICE
-    Mode.PreferLan -> Tier.LAN
-    Mode.PreferCloud -> Tier.CLOUD
-    Mode.AppOrder, Mode.OnlyOnDevice, Mode.OnlyCloud -> null
+    Mode.PreferRemote -> Tier.REMOTE
+    Mode.AppOrder, Mode.OnlyOnDevice, Mode.OnlyRemote -> null
 }
 
 private fun onlyTier(mode: Mode): Tier? = when (mode) {
     Mode.OnlyOnDevice -> Tier.ON_DEVICE
-    Mode.OnlyCloud -> Tier.CLOUD
-    Mode.AppOrder, Mode.PreferOnDevice, Mode.PreferLan, Mode.PreferCloud -> null
+    Mode.OnlyRemote -> Tier.REMOTE
+    Mode.AppOrder, Mode.PreferOnDevice, Mode.PreferRemote -> null
+}
+
+/** Seconds to first answer text: learned when known, otherwise a typical figure for the tier. */
+private fun latencySeconds(p: ProviderInfo, health: HealthSnapshot): Double =
+    health[p.id].typicalFirstToken?.let { it.inWholeMilliseconds / 1000.0 } ?: when (p.tier) {
+        Tier.ON_DEVICE -> 1.0
+        Tier.REMOTE -> 2.0
+    }
+
+private fun score(rank: Ranking, p: ProviderInfo, health: HealthSnapshot): Double = when (rank) {
+    Ranking.AppOrder -> 0.0
+    Ranking.Quality -> p.quality
+    Ranking.Speed -> -latencySeconds(p, health)
+    is Ranking.Weighted -> rank.quality * p.quality + rank.speed / (1.0 + latencySeconds(p, health))
 }
 
 /** The first rule that excludes [p], in rule order, or null when it stays in the plan. */

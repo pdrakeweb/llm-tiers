@@ -7,3 +7,8 @@ local.properties
 *.keystore
 *.jks
 .kotlin/
+
+# Local endpoints and keys for the opt-in contract tests. Never commit.
+.env
+.env.*
+!.env.example

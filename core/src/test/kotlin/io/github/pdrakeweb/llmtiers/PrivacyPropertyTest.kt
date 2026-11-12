@@ -17,7 +17,7 @@ import kotlin.time.Duration.Companion.minutes
 /**
  * Invariant A-1 as a property: for random requests, provider sets, provider behaviours, approval
  * answers, modes, pins and networks, no `Identifier` item and no unapproved `Personal` item ever
- * reaches a LAN or cloud provider, and nothing sensitive is logged.
+ * reaches a REMOTE or cloud provider, and nothing sensitive is logged.
  *
  * Deterministic: case N uses `Random(SEED + N)`, and a failure names the case to replay.
  */
@@ -30,7 +30,7 @@ class PrivacyPropertyTest {
     )
 
     @Test
-    fun `no Identifier and no unapproved Personal item reaches a LAN or cloud provider`() = runTest(timeout = 5.minutes) {
+    fun `no Identifier and no unapproved Personal item reaches a remote provider`() = runTest(timeout = 5.minutes) {
         var personalSentWithApproval = 0
         var blocked = 0
         var answered = 0
@@ -77,7 +77,7 @@ class PrivacyPropertyTest {
             )
             val shortCircuits = rnd.nextInt(12) == 0
             val ai = TieredAi {
-                providers.forEach(::provider)
+                providers.forEach { provider(it, quality = rnd.nextInt(0, 11) / 10.0) }
                 clock = SchedulerClock(testScheduler)
                 network = monitor
                 this.logger = logger
@@ -96,6 +96,12 @@ class PrivacyPropertyTest {
                 messages = listOf(system("be brief"), user("question")),
                 data = items,
                 mode = Mode.entries.random(rnd),
+                rank = listOf(Ranking.AppOrder, Ranking.Quality, Ranking.Speed, Ranking.Weighted(1.0, 1.0)).random(rnd),
+                strategy = listOf(
+                    Strategy.Sequential, Strategy.Sequential, Strategy.Race(rnd.nextInt(1, 4)),
+                    Strategy.Hedged(rnd.nextInt(0, 3000).milliseconds, rnd.nextInt(1, 4)), Strategy.FastThenBest,
+                    Strategy.BestOf(rnd.nextInt(1, 4)), Strategy.BestOf(2) { rnd.nextInt(-1, 3) },
+                ).random(rnd),
                 pin = if (providers.isNotEmpty() && rnd.nextInt(5) == 0) providers.random(rnd).id else null,
                 safeToRetry = rnd.nextBoolean(),
                 idempotencyKey = if (rnd.nextInt(6) == 0) "key" else null,

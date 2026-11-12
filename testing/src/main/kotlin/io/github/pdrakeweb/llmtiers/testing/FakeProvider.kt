@@ -34,6 +34,9 @@ public class Script {
     public fun fail(failure: ProviderFailure) { ops += Op.Emit(ProviderEvent.Failed(failure)) }
     public fun escalate() { ops += Op.Emit(ProviderEvent.Escalate) }
 
+    /** One sign of life from a reasoning model: working, no answer text yet. */
+    public fun thinking() { ops += Op.Emit(ProviderEvent.Thinking) }
+
     /** Never emits again; only cancellation ends the call. */
     public fun hang() { ops += Op.Hang }
 
@@ -52,6 +55,7 @@ public class FakeProvider(
     override val tier: Tier,
     override val accepts: Set<Sensitivity> = setOf(Sensitivity.Public, Sensitivity.Personal),
     public var caps: Capabilities = Capabilities(),
+    override val probeBeforeUse: Boolean = tier == Tier.ON_DEVICE,
     default: Script.() -> Unit = { token("ok"); done() },
 ) : Provider {
     override val id: ProviderId = ProviderId(id)

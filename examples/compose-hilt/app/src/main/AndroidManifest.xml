@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Android 17+: needed to reach a server on the home network. Requested from the settings card. -->
+    <uses-permission android:name="android.permission.ACCESS_LOCAL_NETWORK" />
+
+    <!--
+        usesCleartextTraffic lets the app talk plain HTTP to a home server. The library's
+        privateCleartextOnly() client then refuses plain HTTP to anything that is not a private
+        or local address. Leave it out if your app only ever uses HTTPS endpoints.
+    -->
+    <application
+        android:name=".ExampleApp"
+        android:allowBackup="false"
+        android:label="llm-tiers example"
+        android:theme="@android:style/Theme.Material.Light.NoActionBar"
+        android:usesCleartextTraffic="true">
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

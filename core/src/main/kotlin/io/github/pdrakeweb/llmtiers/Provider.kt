@@ -10,6 +10,15 @@ public interface Provider {
     /** Which data sensitivities this provider may receive at all. */
     public val accepts: Set<Sensitivity>
 
+    /**
+     * Whether to run the cheap [probe] before sending a request. True by default for on-device
+     * providers (the model may not be ready). Set it for a remote provider that is often
+     * unreachable, such as a server on the home network when the phone is away: the request then
+     * moves on in about a second instead of waiting for a timeout. A provider that is normally
+     * up is simply tried: a fast failure beats pre-emptive avoidance.
+     */
+    public val probeBeforeUse: Boolean get() = tier == Tier.ON_DEVICE
+
     public suspend fun capabilities(): Capabilities
 
     /** Cheap health check. The executor bounds it with the probe timeout. */
@@ -29,6 +38,8 @@ public data class ProviderInfo(
     val tier: Tier,
     val accepts: Set<Sensitivity>,
     val capabilities: Capabilities,
+    /** The app's own judgement of answer quality, 0 to 1. Used by quality ranking and by strategies that pick a "best". */
+    val quality: Double = 0.5,
 )
 
 public sealed interface ProviderEvent {
@@ -36,6 +47,13 @@ public sealed interface ProviderEvent {
         override fun toString(): String = "Token(${text.length} chars)"
     }
     public data class Done(val usage: Usage?) : ProviderEvent
+
+    /**
+     * "I am working on it, but have no answer text yet": a reasoning model that is thinking. It
+     * carries no content. The executor counts it as a sign of life, so a provider that thinks for
+     * longer than the first-token timeout is not mistaken for one that is silent.
+     */
+    public data object Thinking : ProviderEvent
 
     /** "I can't answer this; try the next tier." */
     public data object Escalate : ProviderEvent

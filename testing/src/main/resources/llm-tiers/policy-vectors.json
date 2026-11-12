@@ -1,16 +1,26 @@
 {
-  "format": 1,
-  "about": "Routing policy vectors for llm-tiers. Each vector is one call to plan(request, providers, health, network). 'providers' is the app's configured order. Defaults: accepts [Public, Personal], vision false, jsonSchema false, maxContext 4096, network Wifi, mode AppOrder, health Ready. 'data' lists the sensitivities of the request's data items. 'expect.steps' is the ordered plan; 'expect.skipped' maps provider id to the skip reason code. See testing/POLICY_VECTORS.md.",
+  "format": 2,
+  "about": "Routing policy vectors for llm-tiers. Each vector is one call to plan(request, providers, health, network). 'providers' is the app's configured order. Defaults: accepts [Public, Personal], vision false, jsonSchema false, maxContext 4096, quality 0.5, network Wifi, mode AppOrder, rank AppOrder, health Ready. 'data' lists the sensitivities of the request's data items. 'expect.steps' is the ordered plan; 'expect.skipped' maps provider id to the skip reason code. See testing/POLICY_VECTORS.md.",
   "providerSets": {
     "trio": [
-      { "id": "home", "tier": "LAN", "vision": true, "jsonSchema": true, "maxContext": 32768 },
-      { "id": "cloud", "tier": "CLOUD", "vision": true, "jsonSchema": true, "maxContext": 128000 },
+      { "id": "home", "tier": "REMOTE", "vision": true, "jsonSchema": true, "maxContext": 32768 },
+      { "id": "cloud", "tier": "REMOTE", "vision": true, "jsonSchema": true, "maxContext": 128000 },
       { "id": "nano", "tier": "ON_DEVICE" }
     ],
     "cloudPublicOnly": [
-      { "id": "home", "tier": "LAN", "vision": true, "jsonSchema": true, "maxContext": 32768 },
-      { "id": "cloud", "tier": "CLOUD", "accepts": ["Public"], "jsonSchema": true, "maxContext": 128000 },
+      { "id": "home", "tier": "REMOTE", "vision": true, "jsonSchema": true, "maxContext": 32768 },
+      { "id": "cloud", "tier": "REMOTE", "accepts": ["Public"], "jsonSchema": true, "maxContext": 128000 },
       { "id": "nano", "tier": "ON_DEVICE" }
+    ],
+    "remotesPublicOnly": [
+      { "id": "home", "tier": "REMOTE", "accepts": ["Public"] },
+      { "id": "cloud", "tier": "REMOTE", "accepts": ["Public"] },
+      { "id": "nano", "tier": "ON_DEVICE" }
+    ],
+    "graded": [
+      { "id": "home", "tier": "REMOTE", "quality": 0.4 },
+      { "id": "cloud", "tier": "REMOTE", "quality": 0.9 },
+      { "id": "nano", "tier": "ON_DEVICE", "quality": 0.2 }
     ]
   },
   "vectors": [
@@ -26,23 +36,17 @@
       "expect": { "steps": [{ "id": "nano" }, { "id": "home" }, { "id": "cloud" }] }
     },
     {
-      "name": "PreferLan moves LAN providers to the front",
+      "name": "PreferRemote moves remote providers to the front, in app order",
       "providers": [
-        { "id": "cloud", "tier": "CLOUD" },
         { "id": "nano", "tier": "ON_DEVICE" },
-        { "id": "home", "tier": "LAN" }
+        { "id": "home", "tier": "REMOTE" },
+        { "id": "cloud", "tier": "REMOTE" }
       ],
-      "request": { "mode": "PreferLan" },
+      "request": { "mode": "PreferRemote" },
       "expect": { "steps": [{ "id": "home" }, { "id": "cloud" }, { "id": "nano" }] }
     },
     {
-      "name": "PreferCloud moves cloud providers to the front",
-      "providers": "trio",
-      "request": { "mode": "PreferCloud" },
-      "expect": { "steps": [{ "id": "cloud" }, { "id": "home" }, { "id": "nano" }] }
-    },
-    {
-      "name": "OnlyOnDevice excludes every other tier",
+      "name": "OnlyOnDevice excludes every remote provider: the user chose to stay on the device",
       "providers": "trio",
       "request": { "mode": "OnlyOnDevice" },
       "expect": {
@@ -51,16 +55,16 @@
       }
     },
     {
-      "name": "OnlyCloud excludes every other tier",
+      "name": "OnlyRemote excludes on-device providers and keeps every remote one",
       "providers": "trio",
-      "request": { "mode": "OnlyCloud" },
+      "request": { "mode": "OnlyRemote" },
       "expect": {
-        "steps": [{ "id": "cloud" }],
-        "skipped": { "home": "ExcludedByMode:OnlyCloud", "nano": "ExcludedByMode:OnlyCloud" }
+        "steps": [{ "id": "home" }, { "id": "cloud" }],
+        "skipped": { "nano": "ExcludedByMode:OnlyRemote" }
       }
     },
     {
-      "name": "Personal data needs approval for LAN and cloud, never for on-device",
+      "name": "Personal data needs approval for every remote provider, never for on-device",
       "providers": "trio",
       "request": { "data": ["Public", "Personal"] },
       "expect": {
@@ -88,14 +92,14 @@
     },
     {
       "name": "privacy can leave no provider: nothing is planned rather than sent anyway",
-      "providers": "cloudPublicOnly",
-      "request": { "data": ["Personal"], "mode": "OnlyCloud" },
+      "providers": "remotesPublicOnly",
+      "request": { "data": ["Personal"], "mode": "OnlyRemote" },
       "expect": {
         "steps": [],
         "skipped": {
+          "home": "SensitivityNotAccepted:Personal",
           "cloud": "SensitivityNotAccepted:Personal",
-          "home": "ExcludedByMode:OnlyCloud",
-          "nano": "ExcludedByMode:OnlyCloud"
+          "nano": "ExcludedByMode:OnlyRemote"
         }
       }
     },
@@ -103,7 +107,7 @@
       "name": "a provider that accepts only Personal data is skipped for a Public item",
       "providers": [
         { "id": "vault", "tier": "ON_DEVICE", "accepts": ["Personal"] },
-        { "id": "cloud", "tier": "CLOUD" }
+        { "id": "cloud", "tier": "REMOTE" }
       ],
       "request": { "data": ["Public"] },
       "expect": { "steps": [{ "id": "cloud" }], "skipped": { "vault": "SensitivityNotAccepted:Public" } }
@@ -153,7 +157,7 @@
     {
       "name": "a pin is the user's explicit choice and overrides the mode",
       "providers": "trio",
-      "request": { "pin": "nano", "mode": "OnlyCloud" },
+      "request": { "pin": "nano", "mode": "OnlyRemote" },
       "expect": { "steps": [{ "id": "nano" }], "skipped": { "home": "NotPinned", "cloud": "NotPinned" } }
     },
     {
@@ -182,7 +186,7 @@
       }
     },
     {
-      "name": "a pinned cloud provider is skipped when offline, and nothing replaces it",
+      "name": "a pinned remote provider is skipped when offline, and nothing replaces it",
       "providers": "trio",
       "request": { "pin": "cloud" },
       "network": "None",
@@ -201,23 +205,23 @@
       "expect": { "steps": [{ "id": "home" }, { "id": "cloud" }, { "id": "nano" }] }
     },
     {
-      "name": "offline leaves only on-device providers",
+      "name": "offline (airplane mode) leaves only on-device providers, with no setting to change",
       "providers": "trio",
       "network": "None",
       "expect": { "steps": [{ "id": "nano" }], "skipped": { "home": "Offline", "cloud": "Offline" } }
     },
     {
-      "name": "offline with OnlyCloud leaves nothing; mode is reported before health",
+      "name": "offline with OnlyRemote leaves nothing; mode is reported before health",
       "providers": "trio",
-      "request": { "mode": "OnlyCloud" },
+      "request": { "mode": "OnlyRemote" },
       "network": "None",
       "expect": {
         "steps": [],
-        "skipped": { "home": "ExcludedByMode:OnlyCloud", "cloud": "Offline", "nano": "ExcludedByMode:OnlyCloud" }
+        "skipped": { "home": "Offline", "cloud": "Offline", "nano": "ExcludedByMode:OnlyRemote" }
       }
     },
     {
-      "name": "cellular is online: LAN is still planned and left to its fast probe",
+      "name": "cellular is online: every remote provider is still planned",
       "providers": "trio",
       "network": "Cellular",
       "expect": { "steps": [{ "id": "home" }, { "id": "cloud" }, { "id": "nano" }] }
@@ -254,6 +258,75 @@
       "name": "no providers gives an empty plan",
       "providers": [],
       "expect": { "steps": [] }
+    },
+    {
+      "name": "rank Quality puts the highest declared quality first",
+      "providers": "graded",
+      "request": { "rank": "Quality" },
+      "expect": { "steps": [{ "id": "cloud" }, { "id": "home" }, { "id": "nano" }] }
+    },
+    {
+      "name": "rank Quality keeps the app's order between providers of equal quality",
+      "providers": "trio",
+      "request": { "rank": "Quality" },
+      "expect": { "steps": [{ "id": "home" }, { "id": "cloud" }, { "id": "nano" }] }
+    },
+    {
+      "name": "rank Speed puts the provider with the shortest learned time to first token first",
+      "providers": "trio",
+      "request": { "rank": "Speed" },
+      "health": { "home": { "typicalFirstTokenMs": 3000 }, "cloud": { "typicalFirstTokenMs": 400 } },
+      "expect": { "steps": [{ "id": "cloud" }, { "id": "nano" }, { "id": "home" }] }
+    },
+    {
+      "name": "rank Speed with no history assumes 1 s on device and 2 s remote",
+      "providers": "trio",
+      "request": { "rank": "Speed" },
+      "expect": { "steps": [{ "id": "nano" }, { "id": "home" }, { "id": "cloud" }] }
+    },
+    {
+      "name": "rank Weighted with no weight on speed is the quality order",
+      "providers": "graded",
+      "request": { "rank": { "quality": 1, "speed": 0 } },
+      "health": { "cloud": { "typicalFirstTokenMs": 9000 } },
+      "expect": { "steps": [{ "id": "cloud" }, { "id": "home" }, { "id": "nano" }] }
+    },
+    {
+      "name": "rank Weighted blends them: a fast, decent provider beats a slow, excellent one",
+      "providers": [
+        { "id": "excellent", "tier": "REMOTE", "quality": 0.9 },
+        { "id": "decent", "tier": "REMOTE", "quality": 0.6 },
+        { "id": "nano", "tier": "ON_DEVICE", "quality": 0.2 }
+      ],
+      "request": { "rank": { "quality": 1, "speed": 1 } },
+      "health": { "excellent": { "typicalFirstTokenMs": 9000 }, "decent": { "typicalFirstTokenMs": 500 } },
+      "expect": { "steps": [{ "id": "decent" }, { "id": "excellent" }, { "id": "nano" }] }
+    },
+    {
+      "name": "the mode's preferred tier stays in front, with the ranking applied inside each group",
+      "providers": "graded",
+      "request": { "mode": "PreferOnDevice", "rank": "Quality" },
+      "expect": { "steps": [{ "id": "nano" }, { "id": "cloud" }, { "id": "home" }] }
+    },
+    {
+      "name": "ranking orders only the providers that passed the earlier rules",
+      "providers": "graded",
+      "request": { "rank": "Quality" },
+      "health": { "cloud": { "state": "Out" } },
+      "expect": { "steps": [{ "id": "home" }, { "id": "nano" }], "skipped": { "cloud": "CoolingDown" } }
+    },
+    {
+      "name": "a pin is unaffected by ranking",
+      "providers": "graded",
+      "request": { "pin": "home", "rank": "Quality" },
+      "expect": { "steps": [{ "id": "home" }], "skipped": { "cloud": "NotPinned", "nano": "NotPinned" } }
+    },
+    {
+      "name": "the budget applies after the ranking",
+      "providers": "graded",
+      "request": { "rank": "Quality", "budgetFirstTokenMs": 1000 },
+      "health": { "cloud": { "typicalFirstTokenMs": 3000 }, "home": { "typicalFirstTokenMs": 300 } },
+      "expect": { "steps": [{ "id": "home" }, { "id": "cloud" }, { "id": "nano" }] }
     }
   ]
 }

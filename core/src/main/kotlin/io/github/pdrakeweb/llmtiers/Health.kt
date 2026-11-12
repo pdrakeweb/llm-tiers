@@ -55,6 +55,11 @@ public data class TimeoutConfig(
     val approval: Duration = 2.minutes,
     /** Bound on the short-circuit hook and on `capabilities()`. */
     val hook: Duration = 5.seconds,
+    /**
+     * The longest a provider may spend thinking before its first token. While it reports
+     * `Thinking` it only has to keep doing so within the stall timeout; this caps the total.
+     */
+    val thinking: Duration = 2.minutes,
 )
 
 public data class AttemptTimeouts(val firstToken: Duration, val stall: Duration)
@@ -76,6 +81,7 @@ public class HealthTracker(
 
     private class Latency {
         val firstToken = ArrayDeque<Long>()
+        val firstSignal = ArrayDeque<Long>()
         val gap = ArrayDeque<Long>()
     }
 
@@ -99,8 +105,21 @@ public class HealthTracker(
         entries[Key(provider, network)]?.state(clock.nowMillis()) ?: HealthState.Ready
     }
 
-    /** Records a completed answer, with its first-token latency and longest gap between tokens. */
-    public suspend fun recordSuccess(provider: ProviderId, network: NetworkId, firstToken: Duration?, maxGap: Duration?): Unit =
+    /**
+     * Records a completed answer.
+     * @param firstToken when the answer text started; this is what latency budgets compare against.
+     * @param maxGap the longest time without a sign of life once the answer had started.
+     * @param firstSignal when the provider first showed life (its first `Thinking` or first
+     *   token); the learned first-token timeout comes from this, so a model that thinks for a
+     *   long time does not stretch the time allowed for plain silence.
+     */
+    public suspend fun recordSuccess(
+        provider: ProviderId,
+        network: NetworkId,
+        firstToken: Duration?,
+        maxGap: Duration?,
+        firstSignal: Duration? = firstToken,
+    ): Unit =
         mutex.withLock {
             entries[Key(provider, network)]?.apply {
                 failures.clear()
@@ -109,6 +128,7 @@ public class HealthTracker(
             }
             val l = latency.getOrPut(provider) { Latency() }
             firstToken?.let { l.firstToken.addCapped(it.inWholeMilliseconds) }
+            firstSignal?.let { l.firstSignal.addCapped(it.inWholeMilliseconds) }
             maxGap?.let { l.gap.addCapped(it.inWholeMilliseconds) }
         }
 
@@ -119,7 +139,7 @@ public class HealthTracker(
         // come only from successes, so forget them and relearn from the defaults; otherwise a
         // too-tight timeout could never correct itself.
         when (failure) {
-            ProviderFailure.FirstTokenTimeout -> latency[provider]?.firstToken?.clear()
+            ProviderFailure.FirstTokenTimeout -> latency[provider]?.firstSignal?.clear()
             ProviderFailure.Stalled -> latency[provider]?.gap?.clear()
             else -> Unit
         }
@@ -163,7 +183,7 @@ public class HealthTracker(
     public suspend fun timeoutsFor(provider: ProviderId): AttemptTimeouts = mutex.withLock {
         val l = latency[provider]
         AttemptTimeouts(
-            firstToken = learned(l?.firstToken, timeouts.firstToken),
+            firstToken = learned(l?.firstSignal, timeouts.firstToken),
             stall = learned(l?.gap, timeouts.stall),
         )
     }
