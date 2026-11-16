@@ -21,10 +21,14 @@ class FakeOpenAiServer : AutoCloseable {
     /** What `GET /v1/models` does. */
     @Volatile var onModels: (HttpExchange) -> Unit = { it.respond(200, """{"data":[{"id":"test-model"}]}""") }
 
+    /** What `GET /v1/key` does (OpenRouter's key check). By default, the real reply to an unknown key. */
+    @Volatile var onKey: (HttpExchange) -> Unit = { it.respond(401, """{"error":{"message":"User not found.","code":401}}""") }
+
     init {
         server.executor = executor
         server.createContext("/v1/chat/completions") { handle(it) { e -> onChat(e) } }
         server.createContext("/v1/models") { handle(it) { e -> onModels(e) } }
+        server.createContext("/v1/key") { handle(it) { e -> onKey(e) } }
         server.start()
     }
 

@@ -146,23 +146,30 @@ class AiGateway @Inject constructor(
     private val http: OkHttpClient,
     private val approvals: ApprovalBroker,
     private val models: ModelManager,
+    private val catalog: OpenRouterCatalog,
 ) : AiStreams {
     private val nano = GeminiNano()
-    private var built: Pair<AiSettings, TieredAi>? = null
+    private var built: Pair<Pair<AiSettings, OpenRouterModel?>, TieredAi>? = null
 
     override fun stream(request: Request): Flow<Event> = ai().stream(request)
 
     @Synchronized
     private fun ai(): TieredAi {
         val current = settings.load()
-        built?.let { (was, ai) -> if (was == current) return ai }   // rebuild only when settings change
-        return build(current).also { built = current to it }
+        // Once OpenRouter's catalog has loaded, the model's entry supplies its real capabilities.
+        val entry = if (isOpenRouter(current.remoteUrl)) catalog.lastGood?.models?.byId(current.remoteModel) else null
+        built?.let { (was, ai) -> if (was == current to entry) return ai }   // rebuild only when these change
+        return build(current, entry).also { built = (current to entry) to it }
     }
 
-    private fun build(s: AiSettings): TieredAi = TieredAi {
+    private fun build(s: AiSettings, entry: OpenRouterModel?): TieredAi = TieredAi {
         // Registration order is the default order of preference.
         if (s.remoteUrl.isNotBlank()) {
-            val remote = OpenAiCompatible("remote", s.remoteUrl, s.remoteModel, apiKey = s.apiKey, client = http)
+            val remote = if (isOpenRouter(s.remoteUrl)) {
+                OpenRouter.provider("remote", s.remoteModel, apiKey = s.apiKey, catalogEntry = entry, appName = "llm-tiers example", client = http)
+            } else {
+                OpenAiCompatible("remote", s.remoteUrl, s.remoteModel, apiKey = s.apiKey, client = http)
+            }
             provider(if (isHomeNetworkUrl(s.remoteUrl)) remote.requiringLocalNetworkPermission(context) else remote, quality = 0.9)
         }
         provider(nano, quality = 0.3)
@@ -179,6 +186,8 @@ object AiModule {
     @Provides @Singleton fun networkMonitor(@ApplicationContext context: Context) = AndroidNetworkMonitor(context)
     @Provides @Singleton fun httpClient(): OkHttpClient = OkHttpClient.Builder().privateCleartextOnly().build()
     @Provides @Singleton fun modelManager(@ApplicationContext context: Context) = ModelManager(context)
+    @Provides @Singleton fun secretStore(@ApplicationContext context: Context) = SecretStore(context)
+    @Provides @Singleton fun openRouterCatalog(http: OkHttpClient) = OpenRouterCatalog(http)   // one cache for the process
     @Provides fun aiStreams(gateway: AiGateway): AiStreams = gateway
 }
 ```
@@ -189,6 +198,9 @@ Notes:
   includes the version path, for example `https://openrouter.ai/api/v1` or
   `http://192.168.1.20:4000/v1`. An HTTPS URL requires a key; a plain-HTTP URL does not and is
   probed for a second before each use, so being away from home costs one second, not a timeout.
+- **OpenRouter** gets `OpenRouter.provider(id, model, apiKey, …)` instead: the same
+  `OpenAiCompatible` with OpenRouter's base URL and attribution headers, and the model's
+  capabilities taken from its catalog entry when you pass one. See "OpenRouter" below.
 - **`quality`** (0 to 1) is your judgement of each provider's answers. It matters only if you use
   quality ranking, `FastThenBest` or `BestOf` (step 6).
 - **`network = monitor`** is what makes airplane mode work: with no network, remote providers are
@@ -201,12 +213,86 @@ Notes:
   That is intended: the old figures described the old endpoint.
 - Without Hilt: hold the same `AiGateway` in your `Application` class. The rule is one instance.
 
+### OpenRouter: take model ids from the live list
+
+Do not ship a list of OpenRouter model ids in the app. OpenRouter retires and renames models
+(free `:free` variants come and go; Anthropic's ids use dots, `anthropic/claude-sonnet-4.6`, not
+`4-6`), and a stale id makes every request fail. `OpenRouterCatalog` fetches the current list
+(`GET /models`, public, no key sent) and `OpenRouter.checkKey` tells you whether a key works,
+both in package `io.github.pdrakeweb.llmtiers.openai.openrouter`. Neither throws for network or
+HTTP failures; each returns a sealed result to handle with an exhaustive `when`.
+
+`examples/compose-hilt/app/src/main/kotlin/…/MainActivity.kt` (`SettingsViewModel`), run when
+settings are saved:
+
+```kotlin
+val key = when (val status = OpenRouter.checkKey(s.apiKey, http)) {
+    is KeyStatus.Valid -> "Key works" + if (status.isFreeTier) " (free tier)." else "."
+    KeyStatus.Missing -> "Enter your OpenRouter key."
+    KeyStatus.Rejected -> "OpenRouter refused this key."
+    KeyStatus.Unreachable -> "Could not reach OpenRouter to check the key."
+    is KeyStatus.HttpError -> "OpenRouter answered ${status.code}; try again later."
+    KeyStatus.Malformed -> "OpenRouter's reply was not understood."
+}
+// After a failure, the last list that loaded is still good enough to check against.
+val list = (catalog.fetch() as? CatalogResult.Ok)?.models ?: catalog.lastGood?.models
+val chosen = list?.byId(s.remoteModel)
+val model = when {
+    list == null -> "Could not load OpenRouter's model list."
+    chosen != null -> "${chosen.name}, ${chosen.contextLength ?: "unknown"} tokens of context" + if (chosen.isFree) ", free." else "."
+    s.remoteModel.isBlank() -> "Choose a model."
+    else -> "\"${s.remoteModel}\" is not in OpenRouter's list: it was retired or is misspelled."
+}
+val suggestions = if (list != null && chosen == null) list.freeOnly().withMinContext(32_000).take(4) else emptyList()
+```
+
+What a catalog entry (`OpenRouterModel`) gives you:
+
+| Property | Meaning |
+|---|---|
+| `id`, `name`, `description` | `id` is what you pass as `model` |
+| `contextLength` | Context window in tokens, or null |
+| `promptPricePerToken`, `completionPricePerToken` | Exact `BigDecimal` US dollars; null for OpenRouter's routers, whose price depends on the model they pick |
+| `promptPricePerMillionTokens`, `completionPricePerMillionTokens` | The same per million tokens, the unit OpenRouter's site shows |
+| `isFree` | A `:free` variant or both prices zero. Free models have lower rate limits |
+| `supportsTools`, `supportsJsonSchema`, `supportsVision` | From `supported_parameters` and the input modalities |
+| `supportedParameters`, `inputModalities`, `outputModalities`, `created`, `expiresOn` | As OpenRouter reports them; `expiresOn` is an announced retirement date |
+| `capabilities()` | The `Capabilities` the router should assume, which `OpenRouter.provider(catalogEntry = …)` uses |
+
+Filters for a picker: `freeOnly()`, `withMinContext(tokens)`, `supportingTools()`,
+`supportingJsonSchema()`, and `byId(id)` to look one up. `CatalogResult` is `Ok(models,
+fetchedAt)`, `Unreachable`, `HttpError(code)` or `Malformed`. A fetch is cached for an hour
+(`cacheFor`); `fetch(refresh = true)` skips the cache, and `lastGood` keeps the last list for
+when OpenRouter cannot be reached.
+
+`OpenRouter.provider` also takes `appName` and `appUrl`, sent as OpenRouter's attribution headers.
+Without `appUrl` OpenRouter creates no public page for the app; with it, `appHidden = true` asks
+for the page to be hidden from its rankings.
+
 ## Step 4 · Where the API key lives
 
-The library takes the key as a `String`. Storing it is the app's job. The example keeps it
-encrypted with a key held in the Android Keystore (a system store that apps cannot read out of),
-with no extra dependency: see `KeyVault` in
-`examples/compose-hilt/app/src/main/kotlin/…/Settings.kt` and copy it.
+The library takes the key as a `String`. Keep the one the user enters in `SecretStore`
+(`llm-tiers-android`): it encrypts each value under a key held in the Android Keystore (a system
+store that apps cannot read keys out of), and a value it can no longer decrypt reads as null
+instead of throwing. `examples/compose-hilt/app/src/main/kotlin/…/Settings.kt`:
+
+```kotlin
+@Singleton
+class SettingsStore @Inject constructor(@ApplicationContext context: Context, private val secrets: SecretStore) {
+    fun load() = AiSettings(/* … */ apiKey = secrets.get(REMOTE_KEY))
+
+    fun save(settings: AiSettings) {
+        // …
+        val key = settings.apiKey?.trim()
+        if (key.isNullOrEmpty()) secrets.remove(REMOTE_KEY) else secrets.put(REMOTE_KEY, key)
+    }
+}
+```
+
+If your app allows backup (`android:allowBackup` is true by default), exclude the store's file:
+a restored copy cannot be decrypted on the new phone, because Keystore keys never leave the
+device. [`ANDROID.md`](ANDROID.md#storing-api-keys-secretstore) has the two rule files. After a
+restore `get` returns null and the user enters the key again.
 
 For the text field, mark it as a password so a password manager can fill and save it:
 
@@ -219,7 +305,14 @@ OutlinedTextField(
 )
 ```
 
-Never put a key in source, in `BuildConfig`, or in a log line.
+Never put a key in source, in `BuildConfig`, or in a log line. Anyone with the APK can read a
+key compiled into it. The one exception is a build you never give to anyone else, such as a
+personal app installed only on your own device; there, a build-time key as the fallback behind
+the user's own is one line, and the user's key still wins:
+
+```kotlin
+val key = secrets.get("openrouter") ?: BuildConfig.OPENROUTER_KEY.ifBlank { null }   // never in a distributed build
+```
 
 ## Step 5 · Asking before personal data leaves the device
 
@@ -539,7 +632,8 @@ ends at the deadline.
 - [ ] On `Completed` the screen shows `result.text`; `discardPartial` and `Upgrading` clear it.
 - [ ] No prompt, answer or item value is logged; no body-logging HTTP interceptor.
 - [ ] No retry loop or timeout of your own around the library.
-- [ ] The key is stored encrypted and its field is marked as a password.
+- [ ] The key is stored in `SecretStore` (its file excluded from backup if the app allows backup) and its field is marked as a password.
+- [ ] OpenRouter model ids come from `OpenRouterCatalog`, not a list in the app; a saved id is checked with `byId` and the user is told when it is gone.
 - [ ] The local-network permission is asked from settings, and health is reset afterwards.
 - [ ] Unit tests with `FakeProvider` cover answer, fallback, refusal and your advice messages.
 - [ ] The app was launched on a device or emulator and a request was sent.

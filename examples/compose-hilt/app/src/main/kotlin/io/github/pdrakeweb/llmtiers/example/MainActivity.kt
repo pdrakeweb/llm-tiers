@@ -50,10 +50,19 @@ import io.github.pdrakeweb.llmtiers.modelmanager.ModelFit
 import io.github.pdrakeweb.llmtiers.modelmanager.ModelManager
 import io.github.pdrakeweb.llmtiers.modelmanager.ModelState
 import io.github.pdrakeweb.llmtiers.modelmanager.OpenModels
+import io.github.pdrakeweb.llmtiers.openai.openrouter.CatalogResult
+import io.github.pdrakeweb.llmtiers.openai.openrouter.KeyStatus
+import io.github.pdrakeweb.llmtiers.openai.openrouter.OpenRouter
+import io.github.pdrakeweb.llmtiers.openai.openrouter.OpenRouterCatalog
+import io.github.pdrakeweb.llmtiers.openai.openrouter.OpenRouterModel
+import io.github.pdrakeweb.llmtiers.openai.openrouter.byId
+import io.github.pdrakeweb.llmtiers.openai.openrouter.freeOnly
+import io.github.pdrakeweb.llmtiers.openai.openrouter.withMinContext
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
+import okhttp3.OkHttpClient
 import javax.inject.Inject
 
 /** Settings and the on-device model download, kept apart from the chat so each stays small. */
@@ -63,22 +72,65 @@ class SettingsViewModel @Inject constructor(
     private val store: SettingsStore,
     private val gateway: AiGateway,
     private val models: ModelManager,
+    private val catalog: OpenRouterCatalog,
+    private val http: OkHttpClient,
     val approvals: ApprovalBroker,
 ) : ViewModel() {
     private val _settings = MutableStateFlow(store.load())
     val settings: StateFlow<AiSettings> = _settings
     private val _model = MutableStateFlow("")
     val model: StateFlow<String> = _model
+    private val _remote = MutableStateFlow(RemoteCheck())
+    val remote: StateFlow<RemoteCheck> = _remote
     private var watching: Job? = null
+
+    /** What OpenRouter says about the saved key and model, and models to offer if the model is gone. */
+    data class RemoteCheck(val status: String = "", val suggestions: List<OpenRouterModel> = emptyList())
 
     init {
         watchModel() // on every cold start: pick up a download that carried on without the app
+        checkRemote()
     }
 
     fun save(settings: AiSettings) {
         store.save(settings)
         _settings.value = store.load()
         watchModel()
+        checkRemote()
+    }
+
+    /**
+     * For OpenRouter only: does the key work, and is the saved model still in its list? Model ids
+     * are retired and renamed, so a saved id is checked against the live catalog, not trusted.
+     */
+    private fun checkRemote() {
+        val s = _settings.value
+        if (!isOpenRouter(s.remoteUrl)) {
+            _remote.value = RemoteCheck()
+            return
+        }
+        viewModelScope.launch {
+            _remote.value = RemoteCheck("Checking with OpenRouter…")
+            val key = when (val status = OpenRouter.checkKey(s.apiKey, http)) {
+                is KeyStatus.Valid -> "Key works" + if (status.isFreeTier) " (free tier)." else "."
+                KeyStatus.Missing -> "Enter your OpenRouter key."
+                KeyStatus.Rejected -> "OpenRouter refused this key."
+                KeyStatus.Unreachable -> "Could not reach OpenRouter to check the key."
+                is KeyStatus.HttpError -> "OpenRouter answered ${status.code}; try again later."
+                KeyStatus.Malformed -> "OpenRouter's reply was not understood."
+            }
+            // After a failure, the last list that loaded is still good enough to check against.
+            val list = (catalog.fetch() as? CatalogResult.Ok)?.models ?: catalog.lastGood?.models
+            val chosen = list?.byId(s.remoteModel)
+            val model = when {
+                list == null -> "Could not load OpenRouter's model list."
+                chosen != null -> "${chosen.name}, ${chosen.contextLength ?: "unknown"} tokens of context" + if (chosen.isFree) ", free." else "."
+                s.remoteModel.isBlank() -> "Choose a model."
+                else -> "\"${s.remoteModel}\" is not in OpenRouter's list: it was retired or is misspelled."
+            }
+            val suggestions = if (list != null && chosen == null) list.freeOnly().withMinContext(32_000).take(4) else emptyList()
+            _remote.value = RemoteCheck("$key $model", suggestions)
+        }
     }
 
     fun needsLocalNetworkPermission(): Boolean =
@@ -145,6 +197,7 @@ private fun Screen(chat: ChatViewModel, settings: SettingsViewModel) {
     val saved by settings.settings.collectAsStateWithLifecycle()
     val modelStatus by settings.model.collectAsStateWithLifecycle()
     val approval by settings.approvals.pending.collectAsStateWithLifecycle()
+    val remote by settings.remote.collectAsStateWithLifecycle()
 
     var url by rememberSaveable { mutableStateOf(saved.remoteUrl) }
     var model by rememberSaveable { mutableStateOf(saved.remoteModel) }
@@ -176,6 +229,9 @@ private fun Screen(chat: ChatViewModel, settings: SettingsViewModel) {
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
         )
         Button({ settings.save(saved.copy(remoteUrl = url, remoteModel = model, apiKey = key)) }) { Text("Save") }
+        if (remote.status.isNotEmpty()) Text(remote.status)
+        // A saved OpenRouter model that no longer exists: offer current ones from the live list.
+        remote.suggestions.forEach { suggestion -> TextButton({ model = suggestion.id }) { Text("Use ${suggestion.id}") } }
         if (needsPermission) {
             // Asked here, where the user has just entered a home-network address, not at startup.
             OutlinedButton({ askPermission.launch(ACCESS_LOCAL_NETWORK) }) { Text("Allow access to devices on your network") }

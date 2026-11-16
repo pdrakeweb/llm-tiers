@@ -17,6 +17,7 @@ import io.github.pdrakeweb.llmtiers.Result
 import io.github.pdrakeweb.llmtiers.TieredAi
 import io.github.pdrakeweb.llmtiers.android.AndroidNetworkMonitor
 import io.github.pdrakeweb.llmtiers.android.GeminiNano
+import io.github.pdrakeweb.llmtiers.android.SecretStore
 import io.github.pdrakeweb.llmtiers.litert.LiteRtModel
 import io.github.pdrakeweb.llmtiers.android.privateCleartextOnly
 import io.github.pdrakeweb.llmtiers.android.requiringLocalNetworkPermission
@@ -25,6 +26,10 @@ import io.github.pdrakeweb.llmtiers.modelmanager.ModelSpec
 import io.github.pdrakeweb.llmtiers.modelmanager.ModelState
 import io.github.pdrakeweb.llmtiers.modelmanager.OpenModels
 import io.github.pdrakeweb.llmtiers.openai.OpenAiCompatible
+import io.github.pdrakeweb.llmtiers.openai.openrouter.OpenRouter
+import io.github.pdrakeweb.llmtiers.openai.openrouter.OpenRouterCatalog
+import io.github.pdrakeweb.llmtiers.openai.openrouter.OpenRouterModel
+import io.github.pdrakeweb.llmtiers.openai.openrouter.byId
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -88,9 +93,11 @@ class AiGateway @Inject constructor(
     private val http: OkHttpClient,
     private val approvals: ApprovalBroker,
     private val models: ModelManager,
+    private val catalog: OpenRouterCatalog,
 ) : AiStreams {
     private val nano = GeminiNano()
-    private var built: Pair<AiSettings, TieredAi>? = null
+    /** What the current [TieredAi] was built from: the settings and the remote model's catalog entry. */
+    private var built: Pair<Pair<AiSettings, OpenRouterModel?>, TieredAi>? = null
     private var local: Pair<ModelSpec, LiteRtModel>? = null
 
     override fun stream(request: Request): Flow<Event> = ai().stream(request)
@@ -108,14 +115,20 @@ class AiGateway @Inject constructor(
     @Synchronized
     private fun ai(): TieredAi {
         val current = settings.load()
-        built?.let { (was, ai) -> if (was == current) return ai }
-        return build(current).also { built = current to it }
+        // Once OpenRouter's catalog has loaded, the model's entry supplies its real capabilities.
+        val entry = if (isOpenRouter(current.remoteUrl)) catalog.lastGood?.models?.byId(current.remoteModel) else null
+        built?.let { (was, ai) -> if (was == current to entry) return ai }
+        return build(current, entry).also { built = (current to entry) to it }
     }
 
-    private fun build(s: AiSettings): TieredAi = TieredAi {
+    private fun build(s: AiSettings, entry: OpenRouterModel?): TieredAi = TieredAi {
         // Registration order is the default order of preference.
         if (s.remoteUrl.isNotBlank()) {
-            val remote = OpenAiCompatible(REMOTE, s.remoteUrl, s.remoteModel, apiKey = s.apiKey, client = http)
+            val remote = if (isOpenRouter(s.remoteUrl)) {
+                OpenRouter.provider(REMOTE, s.remoteModel, apiKey = s.apiKey, catalogEntry = entry, appName = "llm-tiers example", client = http)
+            } else {
+                OpenAiCompatible(REMOTE, s.remoteUrl, s.remoteModel, apiKey = s.apiKey, client = http)
+            }
             // A server on the home network needs the Android 17 local-network permission: gate it.
             provider(if (isHomeNetworkUrl(s.remoteUrl)) remote.requiringLocalNetworkPermission(context) else remote, quality = 0.9)
         }
@@ -150,6 +163,8 @@ fun isHomeNetworkUrl(url: String): Boolean =
 
 fun AiSettings.model(): ModelSpec? = OpenModels.all.firstOrNull { it.id == modelId }
 
+fun isOpenRouter(url: String): Boolean = url.trim().trimEnd('/') == OpenRouter.BASE_URL
+
 @Module
 @InstallIn(SingletonComponent::class)
 object AiModule {
@@ -162,6 +177,14 @@ object AiModule {
 
     @Provides @Singleton
     fun modelManager(@ApplicationContext context: Context) = ModelManager(context)
+
+    /** Encrypted storage for the API key the user enters. */
+    @Provides @Singleton
+    fun secretStore(@ApplicationContext context: Context) = SecretStore(context)
+
+    /** OpenRouter's live model list, cached for an hour. One per process, so the cache is shared. */
+    @Provides @Singleton
+    fun openRouterCatalog(http: OkHttpClient) = OpenRouterCatalog(http)
 
     @Provides
     fun aiStreams(gateway: AiGateway): AiStreams = gateway

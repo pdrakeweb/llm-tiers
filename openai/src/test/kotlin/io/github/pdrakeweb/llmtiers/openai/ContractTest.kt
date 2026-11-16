@@ -9,6 +9,13 @@ import io.github.pdrakeweb.llmtiers.Result
 import io.github.pdrakeweb.llmtiers.Tier
 import io.github.pdrakeweb.llmtiers.TieredAi
 import io.github.pdrakeweb.llmtiers.TimeoutConfig
+import io.github.pdrakeweb.llmtiers.openai.openrouter.CatalogResult
+import io.github.pdrakeweb.llmtiers.openai.openrouter.KeyStatus
+import io.github.pdrakeweb.llmtiers.openai.openrouter.OpenRouter
+import io.github.pdrakeweb.llmtiers.openai.openrouter.OpenRouterCatalog
+import io.github.pdrakeweb.llmtiers.openai.openrouter.byId
+import io.github.pdrakeweb.llmtiers.openai.openrouter.freeOnly
+import io.github.pdrakeweb.llmtiers.openai.openrouter.supportingJsonSchema
 import io.github.pdrakeweb.llmtiers.user
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
@@ -17,6 +24,7 @@ import org.junit.jupiter.api.Assumptions.assumeTrue
 import org.junit.jupiter.api.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
@@ -71,6 +79,33 @@ class ContractTest {
         val result = runBlocking { withTimeout(60.seconds) { TieredAi { provider(provider) }.generate(Request(listOf(user("hi")))) } }
         assertIs<Result.NoneAvailable>(result)
         assertEquals(Outcome.Failed(ProviderFailure.AuthRejected), result.attempts.single().outcome)
+    }
+
+    @Test
+    fun `OpenRouter's live catalog parses and still lists the configured model`() {
+        val model = env("LLM_TIERS_OPENROUTER_MODEL")
+        assumeTrue(model != null, "set LLM_TIERS_OPENROUTER_MODEL to run")
+        val result = runBlocking { withTimeout(60.seconds) { OpenRouterCatalog().fetch() } }
+        assertIs<CatalogResult.Ok>(result, "result was $result")
+        val models = result.models
+        assertTrue(models.size > 50, "expected the full list, got ${models.size}")
+        assertTrue(models.freeOnly().isNotEmpty() && models.supportingJsonSchema().isNotEmpty())
+        val entry = assertNotNull(models.byId(model!!), "$model is not in OpenRouter's catalog: retired or renamed")
+        println("contract: OpenRouter lists ${models.size} models (${models.freeOnly().size} free); $model: ${entry.capabilities()}")
+    }
+
+    @Test
+    fun `OpenRouter's key check accepts the configured key and refuses a made-up one`() {
+        assumeTrue(env("LLM_TIERS_OPENROUTER_MODEL") != null, "set LLM_TIERS_OPENROUTER_MODEL to run")
+        runBlocking {
+            withTimeout(60.seconds) {
+                assertEquals(KeyStatus.Rejected, OpenRouter.checkKey("sk-or-v1-deliberately-invalid"))
+                val key = env("LLM_TIERS_OPENROUTER_API_KEY") ?: return@withTimeout
+                val status = OpenRouter.checkKey(key)
+                assertIs<KeyStatus.Valid>(status, "status was ${status::class.simpleName}")
+                println("contract: OpenRouter accepts the configured key; free tier: ${status.isFreeTier}, limit set: ${status.limit != null}")
+            }
+        }
     }
 
     private fun streamsAnAnswer(provider: OpenAiCompatible) = runBlocking {
