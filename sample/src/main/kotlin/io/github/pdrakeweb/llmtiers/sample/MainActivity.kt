@@ -31,6 +31,7 @@ import io.github.pdrakeweb.llmtiers.TieredAi
 import io.github.pdrakeweb.llmtiers.android.ACCESS_LOCAL_NETWORK
 import io.github.pdrakeweb.llmtiers.android.AndroidNetworkMonitor
 import io.github.pdrakeweb.llmtiers.android.GeminiNano
+import io.github.pdrakeweb.llmtiers.android.SecretStore
 import io.github.pdrakeweb.llmtiers.litert.LiteRtBackend
 import io.github.pdrakeweb.llmtiers.litert.LiteRtModel
 import io.github.pdrakeweb.llmtiers.android.needsLocalNetworkPermission
@@ -42,6 +43,13 @@ import io.github.pdrakeweb.llmtiers.modelmanager.ModelSpec
 import io.github.pdrakeweb.llmtiers.modelmanager.ModelState
 import io.github.pdrakeweb.llmtiers.modelmanager.OpenModels
 import io.github.pdrakeweb.llmtiers.openai.OpenAiCompatible
+import io.github.pdrakeweb.llmtiers.openai.openrouter.CatalogResult
+import io.github.pdrakeweb.llmtiers.openai.openrouter.KeyStatus
+import io.github.pdrakeweb.llmtiers.openai.openrouter.OpenRouter
+import io.github.pdrakeweb.llmtiers.openai.openrouter.OpenRouterCatalog
+import io.github.pdrakeweb.llmtiers.openai.openrouter.OpenRouterModel
+import io.github.pdrakeweb.llmtiers.openai.openrouter.byId
+import io.github.pdrakeweb.llmtiers.openai.openrouter.freeOnly
 import io.github.pdrakeweb.llmtiers.user
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -50,6 +58,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import kotlin.coroutines.resume
 
@@ -60,7 +69,9 @@ import kotlin.coroutines.resume
  * `prompt`, `personal`, `autoApprove`, `autoSend`, `modelId`, `gpu`, `sendWhenLoaded` and
  * `modelAction` = `download` or `delete`),
  * which is how the journey scripts drive it.
- * The cloud key is held in memory only.
+ * The cloud key is kept in memory unless the user taps "Save key", which stores it encrypted in
+ * the library's SecretStore. "Load OpenRouter models" fills the cloud model picker from
+ * OpenRouter's live catalog.
  */
 class MainActivity : Activity() {
     private data class Config(
@@ -68,6 +79,8 @@ class MainActivity : Activity() {
         val cloudUrl: String, val cloudModel: String, val cloudKey: String,
         val order: String,
         val model: ModelSpec?, val gpu: Boolean,
+        /** The catalog entry for cloudModel, once the catalog is loaded and lists it. */
+        val cloudEntry: OpenRouterModel?,
     )
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
@@ -77,6 +90,9 @@ class MainActivity : Activity() {
     private var local: Triple<ModelSpec, Boolean, LiteRtModel>? = null
     private var watching: Job? = null
     private val http = OkHttpClient.Builder().privateCleartextOnly().build()
+    private lateinit var secrets: SecretStore
+    private val catalog = OpenRouterCatalog(http)
+    private var cloudModels: List<OpenRouterModel> = emptyList()
 
     private var built: Pair<Config, TieredAi>? = null
     private var running: Job? = null
@@ -89,6 +105,10 @@ class MainActivity : Activity() {
     private lateinit var cloudUrl: EditText
     private lateinit var cloudModel: EditText
     private lateinit var cloudKey: EditText
+    private lateinit var keyStatus: TextView
+    private lateinit var freeOnly: android.widget.CheckBox
+    private lateinit var cloudPicker: Spinner
+    private lateinit var catalogStatus: TextView
     private lateinit var order: EditText
     private lateinit var mode: Spinner
     private lateinit var pin: Spinner
@@ -111,6 +131,7 @@ class MainActivity : Activity() {
         super.onCreate(savedInstanceState)
         monitor = AndroidNetworkMonitor(this)
         models = ModelManager(this)
+        secrets = SecretStore(this)
         autoApprove = intent.getBooleanExtra("autoApprove", false)
 
         val column = LinearLayout(this).apply {
@@ -147,7 +168,28 @@ class MainActivity : Activity() {
         lanModel = field("lanModel", "Your server's model")
         cloudUrl = field("cloudUrl", "Cloud service URL (any OpenAI-compatible URL)", "https://openrouter.ai/api/v1")
         cloudModel = field("cloudModel", "Cloud model")
-        cloudKey = field("cloudKey", "Cloud API key (kept in memory only)", secret = true)
+        cloudKey = field("cloudKey", "Cloud API key (kept in memory unless saved)", secret = true)
+        Button(this).apply {
+            text = "Save key (encrypted on this device) and check it"
+            contentDescription = "saveKey"
+            setOnClickListener { saveKey() }
+        }.also(column::addView)
+        Button(this).apply {
+            text = "Forget saved key"
+            setOnClickListener { forgetKey() }
+        }.also(column::addView)
+        keyStatus = TextView(this).also(column::addView)
+        freeOnly = android.widget.CheckBox(this).apply {
+            text = "Free models only"
+            isChecked = intent.getBooleanExtra("freeOnly", false)
+        }.also(column::addView)
+        Button(this).apply {
+            text = "Load OpenRouter models"
+            contentDescription = "loadModels"
+            setOnClickListener { loadCloudModels() }
+        }.also(column::addView)
+        cloudPicker = Spinner(this).apply { contentDescription = "cloudPicker" }.also(column::addView)
+        catalogStatus = TextView(this).apply { textSize = 12f }.also(column::addView)
         order = field("order", "Provider chain, in order (home, cloud, nano, local)", "home,cloud,nano,local")
         mode = spinner("mode", "Mode", Mode.entries.map { it.name })
         pin = spinner("pin", "Pin to one provider", listOf("(none)", "home", "cloud", "nano", "local"))
@@ -207,6 +249,16 @@ class MainActivity : Activity() {
             }
         }
         if (intent.getBooleanExtra("autoSend", false)) column.post { send() }
+        if (!intent.hasExtra("cloudKey")) {
+            scope.launch {
+                val saved = withContext(Dispatchers.IO) { secrets.get(SAVED_KEY) }
+                if (saved != null && cloudKey.text.isEmpty()) {
+                    cloudKey.setText(saved)
+                    keyStatus.text = "Using the saved key."
+                }
+            }
+        }
+        if (intent.getBooleanExtra("loadModels", false)) column.post { loadCloudModels() }
     }
 
     override fun onResume() {
@@ -310,7 +362,103 @@ class MainActivity : Activity() {
         cloudUrl.text.toString().trim(), cloudModel.text.toString().trim(), cloudKey.text.toString().trim(),
         order.text.toString(),
         modelSpec(), gpu.isChecked,
+        cloudModels.byId(cloudModel.text.toString().trim()),
     )
+
+    private fun isOpenRouter(url: String) = url.trimEnd('/') == OpenRouter.BASE_URL
+
+    /** Saves the typed key in the SecretStore, then asks OpenRouter whether it works. */
+    private fun saveKey() {
+        val key = cloudKey.text.toString().trim()
+        if (key.isEmpty()) {
+            keyStatus.text = "Enter a key first."
+            return
+        }
+        scope.launch {
+            val saved = withContext(Dispatchers.IO) { secrets.put(SAVED_KEY, key) }
+            val prefix = if (saved) "Saved. " else "Could not save the key. "
+            if (!isOpenRouter(cloudUrl.text.toString().trim())) {
+                keyStatus.text = prefix
+                return@launch
+            }
+            val status = OpenRouter.checkKey(key, http)
+            keyStatus.text = prefix + when (status) {
+                is KeyStatus.Valid -> "OpenRouter accepts it" +
+                    (status.limitRemaining?.let { " (${dollars(it)} of ${status.limit?.let(::dollars)} left)" } ?: " (no credit limit)") +
+                    if (status.isFreeTier) ", free tier." else "."
+                KeyStatus.Rejected -> "OpenRouter refused this key."
+                KeyStatus.Missing -> "No key."
+                KeyStatus.Unreachable -> "Could not reach OpenRouter to check it."
+                is KeyStatus.HttpError -> "OpenRouter answered ${status.code}; try again later."
+                KeyStatus.Malformed -> "OpenRouter's reply was not understood."
+            }
+            // For the journey script: the outcome only, never the key.
+            Log.i(TAG, "KEY saved=$saved status=${status::class.simpleName}")
+        }
+    }
+
+    private fun forgetKey() {
+        scope.launch {
+            withContext(Dispatchers.IO) { secrets.remove(SAVED_KEY) }
+            cloudKey.setText("")
+            keyStatus.text = "Saved key removed."
+        }
+    }
+
+    /** Fills the cloud model picker from OpenRouter's live catalog, and warns about a stale choice. */
+    private fun loadCloudModels() {
+        scope.launch {
+            catalogStatus.text = "Loading…"
+            val result = catalog.fetch()
+            Log.i(TAG, "CATALOG $result")
+            val problem = when (result) {
+                is CatalogResult.Ok -> null
+                CatalogResult.Unreachable -> "Could not reach OpenRouter."
+                is CatalogResult.HttpError -> "OpenRouter answered ${result.code}."
+                CatalogResult.Malformed -> "OpenRouter's reply was not understood."
+            }
+            // After a failure, the last list that loaded is still worth showing.
+            val all = (result as? CatalogResult.Ok)?.models ?: catalog.lastGood?.models
+            if (all == null) {
+                catalogStatus.text = problem
+                return@launch
+            }
+            cloudModels = if (freeOnly.isChecked) all.freeOnly() else all
+            val current = cloudModel.text.toString().trim()
+            cloudPicker.onItemSelectedListener = null
+            cloudPicker.adapter = ArrayAdapter(
+                this@MainActivity, android.R.layout.simple_spinner_dropdown_item,
+                listOf("(choose a cloud model)") + cloudModels.map(::describe),
+            )
+            cloudPicker.setSelection(cloudModels.indexOfFirst { it.id == current } + 1, false)
+            cloudPicker.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
+                override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: View?, position: Int, id: Long) {
+                    cloudModels.getOrNull(position - 1)?.let { cloudModel.setText(it.id) }
+                }
+                override fun onNothingSelected(parent: android.widget.AdapterView<*>?) = Unit
+            }
+            val stale = current.isNotEmpty() && all.byId(current) == null
+            catalogStatus.text = listOfNotNull(
+                problem,
+                "${cloudModels.size} models.",
+                if (stale) "\"$current\" is not in OpenRouter's list: it was retired or is misspelled." else null,
+            ).joinToString(" ")
+        }
+    }
+
+    private fun describe(model: OpenRouterModel): String {
+        val prompt = model.promptPricePerMillionTokens
+        val completion = model.completionPricePerMillionTokens
+        val price = when {
+            model.isFree -> "free"
+            prompt == null || completion == null -> "variable price"
+            else -> "${dollars(prompt)} / ${dollars(completion)} per 1M tokens"
+        }
+        val context = model.contextLength?.let { ", ${it / 1000}k context" }.orEmpty()
+        return "${model.id} ($price$context)"
+    }
+
+    private fun dollars(amount: java.math.BigDecimal) = "$" + amount.toPlainString()
 
     private fun ai(config: Config): TieredAi {
         built?.let { (c, ai) -> if (c == config) return ai }
@@ -325,7 +473,17 @@ class MainActivity : Activity() {
                             quality = 0.6,
                         )
                     }
-                    "cloud" -> if (config.cloudUrl.isNotEmpty()) {
+                    "cloud" -> if (isOpenRouter(config.cloudUrl)) {
+                        // The catalog entry, once loaded, supplies the model's real context and
+                        // abilities. Without an app URL OpenRouter creates no app page for the sample.
+                        provider(
+                            OpenRouter.provider(
+                                "cloud", config.cloudModel, apiKey = config.cloudKey,
+                                catalogEntry = config.cloudEntry, appName = "llm-tiers sample", client = http,
+                            ),
+                            quality = 0.9,
+                        )
+                    } else if (config.cloudUrl.isNotEmpty()) {
                         provider(
                             OpenAiCompatible(
                                 "cloud", config.cloudUrl, config.cloudModel,
@@ -452,6 +610,7 @@ class MainActivity : Activity() {
 
     private companion object {
         const val TAG = "llmtiers-sample"
+        const val SAVED_KEY = "cloud-api-key"
         val STRATEGIES = linkedMapOf(
             "Sequential" to Strategy.Sequential,
             "Race" to Strategy.Race(),

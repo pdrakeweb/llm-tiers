@@ -5,13 +5,15 @@ remote OpenAI-compatible endpoint (a server on the home network, a self-hosted g
 service) — falls back when one isn't available, and never sends data a request isn't allowed to
 send.
 
-**Status:** T1 (core), T2 (Android) and T3 (downloaded on-device models) implemented. Adapters and
-the first consumer integration (T4) not started. Not yet on Maven Central; publish locally with `./gradlew publishToMavenLocal`.
+**Status:** T1 (core), T2 (Android) and T3 (downloaded on-device models) implemented, plus
+OpenRouter helpers (live model list, key check) and an encrypted store for user-entered keys.
+Adapters and the first consumer integration (T4) not started. Not yet on Maven Central; publish
+locally with `./gradlew publishToMavenLocal`.
 
 ```kotlin
 val ai = TieredAi {
     provider(OpenAiCompatible("home-llama", "http://192.168.1.20:4000/v1", model = "gemma"), quality = 0.6)
-    provider(OpenAiCompatible("openrouter", "https://openrouter.ai/api/v1", model = "…", apiKey = key), quality = 0.9)
+    provider(OpenRouter.provider("openrouter", model = chosenFromCatalog, apiKey = secrets.get("openrouter")), quality = 0.9)
     provider(GeminiNano(), quality = 0.3)
     order("home-llama", "openrouter")
     approve { request, provider -> previewSheet.ask(request.personalItems, provider) }
@@ -38,10 +40,10 @@ the best of several. See [`docs/STRATEGIES.md`](docs/STRATEGIES.md).
 | Module | What it is |
 |---|---|
 | `:core` | Pure Kotlin. Request and result types, the routing policy (`plan()`, a pure function), health tracking, and the executor: timeouts, fallback, escalation, pinning, retry safety. No Android or network types (build guard) |
-| `:openai` | Streaming client for any OpenAI-compatible server (OpenRouter, LiteLLM, llama.cpp, Ollama, vLLM) over OkHttp |
+| `:openai` | Streaming client for any OpenAI-compatible server (OpenRouter, LiteLLM, llama.cpp, Ollama, vLLM) over OkHttp. For OpenRouter: the live model catalog (capabilities, prices, free models), a key check, and the provider with attribution headers |
 | `:model-manager` | Download, SHA-256 verify and delete on-device models through Android's system DownloadManager |
 | `:litert` | Optional: runs a downloaded open model on the device with LiteRT-LM. Separate because its native runtime is about 23 MB per ABI |
-| `:android` | Network monitor, private-address rule for plain HTTP, local-network permission helper, Gemini Nano provider. See [`docs/ANDROID.md`](docs/ANDROID.md) |
+| `:android` | Network monitor, private-address rule for plain HTTP, local-network permission helper, Gemini Nano provider, `SecretStore` (API keys encrypted under an Android Keystore key). See [`docs/ANDROID.md`](docs/ANDROID.md) |
 | `:sample` | A one-screen app: provider settings, a prompt box, and a log of where each request ran and why |
 | `:testing` | Fake providers with scripted latency and failures, fake clocks, a scripted network monitor, and the policy vectors as JSON |
 

@@ -31,3 +31,9 @@ $env:LLM_TIERS_LAN_MODEL = "your-model"
 Each test probes the server (`GET /models`), sends one short prompt through `TieredAi`, and
 asserts that tokens streamed and the result names the provider. One line per run reports the token
 count and timings; no prompt or response text is printed.
+
+Two OpenRouter tests need only `LLM_TIERS_OPENROUTER_MODEL`, because the model list is public:
+one fetches the live catalog, checks that it parses and that the configured model is still listed
+(so a retired contract model is reported as such, not as a streaming failure); the other checks
+that `OpenRouter.checkKey` refuses a made-up key, and accepts the configured key when
+`LLM_TIERS_OPENROUTER_API_KEY` is set too.

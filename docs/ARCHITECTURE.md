@@ -10,10 +10,12 @@ How the library is built. Behaviour is in `DESIGN.md`; keep the two in step.
                  fallback, first-token commit), typed failures, Clock abstraction.
 :openai          OpenAI-compatible client over OkHttp + kotlinx.serialization: chat completions,
                  SSE streaming, JSON-schema output, image parts, /v1/models probe. Works with
-                 OpenRouter, LiteLLM, llama.cpp server, Ollama, vLLM.
+                 OpenRouter, LiteLLM, llama.cpp server, Ollama, vLLM. Package `.openrouter`:
+                 the provider with attribution headers, the live model catalog with capabilities
+                 and prices, and a key check (D-037, D-038).
 :android         NetworkMonitor (keys health by Network handle), private-address and cleartext
                  rules, local-network permission helper (targetSdk 37+), Gemini Nano provider
-                 (ML Kit GenAI Prompt API), encrypted key store.
+                 (ML Kit GenAI Prompt API), encrypted key store (`SecretStore`, D-039).
 :litert          Optional: LiteRT-LM provider for downloaded models. Its own module because the
                  native runtime is about 23 MB per ABI (D-024).
 :model-manager   Download / verify (SHA-256) / delete on-device models through the system

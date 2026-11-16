@@ -74,6 +74,52 @@ While the permission is missing the wrapped provider reports `LocalNetworkPermis
 once, the router falls through to the next provider, and the result's attempts tell the app what
 to ask for. Do not declare or request the permission while targeting SDK 36 or lower.
 
+## Storing API keys: `SecretStore`
+
+The library takes a key as a `String`; `SecretStore` is where an app keeps the one the user typed
+in. Each value is encrypted with AES-256-GCM under a key held in the Android Keystore, the system
+service that lets an app use a key without ever being able to read it out. Only ciphertext is
+written, to a private SharedPreferences file.
+
+```kotlin
+val secrets = SecretStore(context)              // one per process is enough; instances share the file and key
+secrets.put("openrouter", key)                  // true once encrypted and written
+secrets.get("openrouter")                       // String?, never throws
+secrets.contains("openrouter"); secrets.remove("openrouter")
+secrets.observe("openrouter")                   // Flow<String?>: now, then after every change
+```
+
+Each call does a few milliseconds of Keystore work; call it off the main thread where you can
+(`observe` already decrypts on a background dispatcher). Values never appear in `toString()` or
+in exceptions, and the store does not log.
+
+**Backup and device transfer.** Keystore keys are never backed up and never move to a new phone.
+A restored ciphertext therefore arrives without its key: `get` returns null and deletes the
+entry, so the app asks the user for the key again. Nothing crashes, but there is no point backing
+the file up. If the app allows backup, exclude the file, `SecretStore.PREFS_FILE_NAME` plus
+`.xml`:
+
+```xml
+<!-- res/xml/data_extraction_rules.xml, for Android 12 and later:
+     <application android:dataExtractionRules="@xml/data_extraction_rules" …> -->
+<data-extraction-rules>
+    <cloud-backup><exclude domain="sharedpref" path="llm_tiers_secrets.xml" /></cloud-backup>
+    <device-transfer><exclude domain="sharedpref" path="llm_tiers_secrets.xml" /></device-transfer>
+</data-extraction-rules>
+
+<!-- res/xml/backup_rules.xml, for Android 11 and earlier:
+     <application android:fullBackupContent="@xml/backup_rules" …> -->
+<full-backup-content>
+    <exclude domain="sharedpref" path="llm_tiers_secrets.xml" />
+</full-backup-content>
+```
+
+An app with `android:allowBackup="false"` needs neither.
+
+Other failures behave the same way: a key Android has invalidated, or ciphertext that was altered
+or copied under another name, reads as null and the entry is deleted. A failure that may be
+temporary (the Keystore service busy) reads as null and keeps the entry for the next read.
+
 ## Gemini Nano
 
 ```kotlin

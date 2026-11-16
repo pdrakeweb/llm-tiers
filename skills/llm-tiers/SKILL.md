@@ -22,7 +22,8 @@ are relative to that checkout.
 2. **Read `docs/INTEGRATION.md` and follow its nine steps.** It is ordered, and every code block
    comes from a working app.
 3. **Copy from `examples/compose-hilt/`, not from `sample/`.** The example is a real-shaped app
-   (Compose, Hilt, ViewModels, an encrypted key store, unit tests). `sample/` is a test harness
+   (Compose, Hilt, ViewModels, the key kept in `SecretStore`, an OpenRouter key and model check,
+   unit tests). `sample/` is a test harness
    driven by scripts and is the wrong shape to copy.
 4. **Choose routing with `docs/STRATEGIES.md`** only if the default (configured order, one at a
    time, fall back on failure) is not what the app needs.
@@ -31,8 +32,8 @@ are relative to that checkout.
    `docs/INTEGRATION.md`.
 
 `docs/ANDROID.md` has the platform details (plain HTTP to home servers, the Android 17
-local-network permission, Gemini Nano, downloaded models) when a step needs more than the guide
-gives.
+local-network permission, storing keys and excluding them from backup, Gemini Nano, downloaded
+models) when a step needs more than the guide gives.
 
 ## The three rules
 
@@ -66,13 +67,19 @@ The library enforces them. These are the ways an integration defeats them anyway
 | Treating a skipped provider like a failed one | The request after a failure sees `Skipped(CoolingDown)`, and the user gets a useless message | Give `CoolingDown` its own message; `ai.health.reset(id)` after the user fixes something |
 | Adding `llm-tiers-litert` to an app that does not run downloaded models, or shipping its emulator library to phones | 23 MB per ABI of native code, about 50 MB in an unfiltered APK | Leave the module out; if it is needed, ship an App Bundle or set `abiFilters` for release (guide, step 1) |
 | Asking for the local-network permission at startup | Users refuse prompts with no context | Ask on the screen where they enter a home server |
+| A list of OpenRouter model ids written into the app | OpenRouter retires and renames models; a stale id fails every request and nobody notices until a user does | `OpenRouterCatalog().fetch()` for the picker; check a saved id with `models.byId(id)` and say when it is gone (guide, step 3) |
+| Guessing an OpenRouter model's context or JSON support | Requests are routed to a model that cannot take them, or away from one that can | Pass its catalog entry: `OpenRouter.provider(…, catalogEntry = entry)` |
+| The user's key in plain SharedPreferences, a file, or `BuildConfig` | Readable from a backup, a rooted phone or the APK | `SecretStore(context).put(name, key)`; exclude `SecretStore.PREFS_FILE_NAME` from backup (guide, step 4) |
 
 ## The API in one screen
 
 ```kotlin
 // build once
+val secrets = SecretStore(context)                                   // the key the user typed, encrypted
+val models = (OpenRouterCatalog(http).fetch() as? CatalogResult.Ok)?.models.orEmpty()   // live list, cached 1 h
 val ai = TieredAi {
-    provider(OpenAiCompatible("remote", "https://openrouter.ai/api/v1", model = "…", apiKey = key, client = http), quality = 0.9)
+    provider(OpenRouter.provider("remote", model = chosenId, apiKey = secrets.get("openrouter"),
+        catalogEntry = models.byId(chosenId), client = http), quality = 0.9)       // or OpenAiCompatible(id, baseUrl, model, …) for any other server
     provider(GeminiNano(), quality = 0.3)
     network = AndroidNetworkMonitor(context)
     approve { request, provider -> showPreviewAndAsk(request.personalItems, provider) }
@@ -100,8 +107,11 @@ when (val result = ai.generate(request)) {
 }
 ```
 
-Packages: `io.github.pdrakeweb.llmtiers` (core), `.openai` (`OpenAiCompatible`), `.android`
-(`AndroidNetworkMonitor`, `GeminiNano`, `privateCleartextOnly`,
+Packages: `io.github.pdrakeweb.llmtiers` (core), `.openai` (`OpenAiCompatible`),
+`.openai.openrouter` (`OpenRouter.provider`, `OpenRouter.checkKey`, `KeyStatus`,
+`OpenRouterCatalog`, `CatalogResult`, `OpenRouterModel`, and the list filters `byId`, `freeOnly`,
+`withMinContext`, `supportingTools`, `supportingJsonSchema`), `.android`
+(`AndroidNetworkMonitor`, `GeminiNano`, `SecretStore`, `privateCleartextOnly`,
 `requiringLocalNetworkPermission`, `needsLocalNetworkPermission`, `ACCESS_LOCAL_NETWORK`),
 `.litert` (`LiteRtModel`, `LiteRtBackend`),
 `.modelmanager` (`ModelManager`, `ModelSpec`, `ModelState`, `ModelFit`, `OpenModels`), `.testing`
